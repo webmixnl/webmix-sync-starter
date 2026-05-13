@@ -20,16 +20,13 @@ if [ ! -d "gui/venv" ]; then
     python3 -m venv gui/venv
 fi
 
-# Activate virtual environment
-source gui/venv/bin/activate
-
 # Install/upgrade required packages
 echo "🔍 Checking dependencies..."
-pip install --quiet --upgrade pip
-pip install --quiet PyQt5
+gui/venv/bin/python3 -m pip install --quiet --upgrade pip
+gui/venv/bin/python3 -m pip install --quiet -r gui/requirements.txt
 
 # Launch the native GUI
 echo ""
 echo "✅ Starting application..."
 echo ""
-python3 gui/wp-sync-native.py
+gui/venv/bin/python3 gui/wp-sync-native.py
