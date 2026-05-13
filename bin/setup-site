@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+# Quick setup script for creating a new site configuration
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+SITES_DIR="$PROJECT_ROOT/config/sites"
+
+echo "WordPress Sync - Site Configuration Setup"
+echo "=========================================="
+echo ""
+
+# Get site key
+read -p "Enter site key (e.g., client-a, project-name): " SITE_KEY
+if [[ -z "$SITE_KEY" ]]; then
+    echo "Error: Site key cannot be empty"
+    exit 1
+fi
+
+SITE_FILE="$SITES_DIR/$SITE_KEY.env"
+if [[ -f "$SITE_FILE" ]]; then
+    echo "Error: Site configuration already exists: $SITE_FILE"
+    exit 1
+fi
+
+# Get SSH details
+read -p "SSH Host: " SSH_HOST
+read -p "SSH Port [22]: " SSH_PORT
+SSH_PORT="${SSH_PORT:-22}"
+read -p "SSH User: " SSH_USER
+
+# Get paths
+echo ""
+echo "Local root should normally point to wp-content"
+echo "Example: \$HOME/Sites/mysite/public_html/wp-content"
+read -p "Local Root: " LOCAL_ROOT
+
+echo ""
+echo "Remote root should normally point to wp-content as well"
+echo "Example: /home/cpaneluser/public_html/wp-content"
+read -p "Remote Root: " REMOTE_ROOT
+
+# Get sync items
+echo ""
+echo "Enter folders to sync (one per line, relative to the roots)"
+echo "Example: themes/my-theme"
+echo "Example: plugins/my-plugin"
+echo "NOTE: Do NOT include leading slashes (use 'plugins' not '/plugins')"
+echo "Enter an empty line when done:"
+SYNC_ITEMS=""
+while true; do
+    read -p "> " ITEM
+    if [[ -z "$ITEM" ]]; then
+        break
+    fi
+    # Strip leading slash if present
+    ITEM="${ITEM#/}"
+    if [[ -n "$SYNC_ITEMS" ]]; then
+        SYNC_ITEMS="$SYNC_ITEMS
+$ITEM"
+    else
+        SYNC_ITEMS="$ITEM"
+    fi
+done
+
+if [[ -z "$SYNC_ITEMS" ]]; then
+    echo "Error: At least one sync item is required"
+    exit 1
+fi
+
+# Get optional settings
+read -p "Enable rsync --delete? (y/N): " DELETE_CHOICE
+if [[ "$DELETE_CHOICE" =~ ^[Yy]$ ]]; then
+    RSYNC_DELETE="1"
+else
+    RSYNC_DELETE="0"
+fi
+
+read -p "Watch debounce seconds [1]: " DEBOUNCE_SECONDS
+DEBOUNCE_SECONDS="${DEBOUNCE_SECONDS:-1}"
+
+# Expand LOCAL_ROOT for directory creation check
+LOCAL_ROOT_EXPANDED="$(eval echo "$LOCAL_ROOT")"
+
+# Offer to create local directory if it doesn't exist
+if [[ ! -d "$LOCAL_ROOT_EXPANDED" ]]; then
+    read -p "Local directory does not exist. Create it? (Y/n): " CREATE_DIR
+    if [[ ! "$CREATE_DIR" =~ ^[Nn]$ ]]; then
+        mkdir -p "$LOCAL_ROOT_EXPANDED"
+        echo "✓ Created local directory: $LOCAL_ROOT_EXPANDED"
+    fi
+fi
+
+# Create the configuration file
+cat > "$SITE_FILE" << EOF
+SITE_KEY="$SITE_KEY"
+SSH_HOST="$SSH_HOST"
+SSH_PORT="$SSH_PORT"
+SSH_USER="$SSH_USER"
+ENVIRONMENT="development"
+
+# Local root should normally point to wp-content, not the full site.
+LOCAL_ROOT="$LOCAL_ROOT"
+
+# Remote root should normally point to wp-content as well.
+REMOTE_ROOT="$REMOTE_ROOT"
+
+# One relative path per line. Only these folders are synced.
+SYNC_ITEMS="$SYNC_ITEMS"
+
+# 0 = safer default, 1 = allow rsync --delete
+RSYNC_DELETE="$RSYNC_DELETE"
+
+# Used by watch mode.
+DEBOUNCE_SECONDS="$DEBOUNCE_SECONDS"
+
+# Optional custom SSH identity file.
+# SSH_KEY_FILE="\$HOME/.ssh/id_rsa_bram"
+EOF
+
+echo ""
+echo "✓ Site configuration created: $SITE_FILE"
+echo ""
+echo "Next steps:"
+echo "  1. Test SSH connection: ssh -p $SSH_PORT $SSH_USER@$SSH_HOST"
+echo "  2. Pull from remote: ./bin/pull $SITE_KEY --dry-run"
+echo "  3. If dry-run looks good: ./bin/pull $SITE_KEY"
+echo "  4. Start watch mode: ./bin/watch $SITE_KEY"
+echo ""
+echo "Or use the GUI: ./launch-gui.sh"

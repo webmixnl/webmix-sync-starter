@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+releases/
+
+# py2app
+*.app
+*.dmg
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+logs/*.log
+logs/
+
+# Local environment files and credentials
+*.env.local
+config/app-settings.json
+config/sites/*.env
+!config/sites/example-site.env
+
+# SSH keys (safety)
+*.pem
+*.key
+id_rsa*

@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/../lib/common.sh"
+
+SITE_KEY="${1:-}"
+[[ -n "$SITE_KEY" ]] || usage_site_arg
+shift || true
+
+DRY_RUN=0
+if [[ "${1:-}" == "--dry-run" ]]; then
+  DRY_RUN=1
+fi
+
+require_command rsync
+require_command ssh
+load_site_config "$SITE_KEY"
+ensure_local_dirs_exist_for_pull
+print_summary
+run_all_pull

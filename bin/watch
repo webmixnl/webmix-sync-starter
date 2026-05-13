@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/../lib/common.sh"
+
+SITE_KEY="${1:-}"
+[[ -n "$SITE_KEY" ]] || usage_site_arg
+shift || true
+
+DRY_RUN=0
+if [[ "${1:-}" == "--dry-run" ]]; then
+  DRY_RUN=1
+fi
+
+require_command rsync
+require_command ssh
+require_command fswatch
+load_site_config "$SITE_KEY"
+assert_watch_paths_exist
+print_summary
+
+log "Watching for local changes..."
+log "Debounce seconds: $DEBOUNCE_SECONDS"
+
+last_run=0
+pending=0
+
+trigger_sync() {
+  local now
+  now="$(date +%s)"
+  if (( now - last_run < DEBOUNCE_SECONDS )); then
+    pending=1
+    return
+  fi
+
+  last_run="$now"
+  pending=0
+  run_all_push || log "Push failed; waiting for next change."
+}
+
+while IFS= read -r _event; do
+  trigger_sync
+
+  if (( pending == 1 )); then
+    sleep "$DEBOUNCE_SECONDS"
+    trigger_sync
+  fi
+done < <(watch_paths | xargs fswatch -0 | xargs -0 -n 1 echo)
