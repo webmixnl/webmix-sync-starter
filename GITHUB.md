@@ -29,7 +29,7 @@ git commit -m "Initial commit: Webmix Sync Tool v1.0.0"
 
 **Option A: Via GitHub Website**
 1. Go to https://github.com/new
-2. Repository name: `webmix-sync-tool` (or your choice)
+2. Repository name: `webmix-sync-starter` (or your choice)
 3. Choose: **Private** (recommended for internal tools)
 4. Don't initialize with README (you already have one)
 5. Click "Create repository"
@@ -43,14 +43,14 @@ brew install gh
 gh auth login
 
 # Create private repo
-gh repo create webmix-sync-tool --private --source=. --remote=origin
+gh repo create webmix-sync-starter --private --source=. --remote=origin
 ```
 
 ### 3. Connect and Push
 
 ```bash
 # Add remote (replace YOUR_USERNAME)
-git remote add origin https://github.com/YOUR_USERNAME/webmix-sync-tool.git
+git remote add origin https://github.com/YOUR_USERNAME/webmix-sync-starter.git
 
 # Push to GitHub
 git branch -M main
@@ -77,7 +77,7 @@ git push -u origin main
 ## 📂 Repository Structure on GitHub
 
 ```
-webmix-sync-tool/
+webmix-sync-starter/
 ├── .gitignore              ✅ Committed
 ├── README.md               ✅ Committed
 ├── BUILD.md                ✅ Committed
@@ -115,8 +115,8 @@ webmix-sync-tool/
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/YOUR_USERNAME/webmix-sync-tool.git
-   cd webmix-sync-tool
+   git clone https://github.com/YOUR_USERNAME/webmix-sync-starter.git
+   cd webmix-sync-starter
    ```
 
 2. **Set up for development:**
@@ -270,8 +270,8 @@ git commit --amend -m "Remove accidentally committed config"
 # First time setup
 git init
 git add .
-git commit -m "Initial commit: Webmix Sync Tool"
-git remote add origin https://github.com/YOUR_USERNAME/webmix-sync-tool.git
+git commit -m "Initial commit: Webmix Sync Starter"
+git remote add origin https://github.com/YOUR_USERNAME/webmix-sync-starter.git
 git push -u origin main
 
 # Verify no secrets committed

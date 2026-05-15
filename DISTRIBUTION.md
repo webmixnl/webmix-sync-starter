@@ -32,13 +32,13 @@ Verify:
 ./create-dmg.sh
 ```
 
-**Output:** `dist/Webmix-Sync-Tool-Installer.dmg` (~100MB compressed)
+**Output:** `dist/Webmix-Sync-Starter-Installer.dmg` (~100MB compressed)
 
 ## Distribution Options
 
 ### Option A: DMG Installer (Recommended)
 
-Share: `dist/Webmix-Sync-Tool-Installer.dmg`
+Share: `dist/Webmix-Sync-Starter-Installer.dmg`
 
 **User steps:**
 1. Double-click DMG to mount
@@ -167,7 +167,7 @@ When releasing a new version:
 3. Clean and rebuild: `rm -rf build dist && ./build-app.sh`
 4. Test thoroughly
 5. Create DMG: `./create-dmg.sh`
-6. Rename DMG to include version: `Webmix-Sync-Tool-v1.0.0.dmg`
+6. Rename DMG to include version: `Webmix-Sync-Starter-v1.0.0.dmg`
 7. Distribute
 
 ## File Sizes

@@ -25,25 +25,43 @@ echo "🧹 Cleaning previous builds..."
 rm -rf build dist
 echo ""
 
-# Check if venv exists
-if [ ! -d "gui/venv" ]; then
-    echo "📦 Creating virtual environment..."
-    cd gui
-    python3 -m venv venv
-    cd ..
+# Check if venv exists and is valid
+VENV_DIR="gui/venv"
+PYTHON_BIN="$VENV_DIR/bin/python3"
+PIP_BIN="$VENV_DIR/bin/pip"
+
+# Check if venv needs to be recreated (invalid or moved location)
+VENV_VALID=true
+if [ ! -d "$VENV_DIR" ]; then
+    VENV_VALID=false
+elif [ ! -f "$PYTHON_BIN" ]; then
+    VENV_VALID=false
+else
+    # Test if pip works (it has hardcoded paths that break when venv is moved)
+    "$PIP_BIN" --version &>/dev/null || VENV_VALID=false
+fi
+
+if [ "$VENV_VALID" = false ]; then
+    echo "📦 Creating/recreating virtual environment..."
+    rm -rf "$VENV_DIR"
+    python3 -m venv "$VENV_DIR"
     echo ""
 fi
 
-# Activate virtual environment
-echo "🔌 Activating virtual environment..."
-source gui/venv/bin/activate
+# Verify venv is working
+if [ ! -f "$PYTHON_BIN" ]; then
+    echo -e "${RED}❌ Error: Virtual environment not properly created${NC}"
+    exit 1
+fi
+
+echo "🔌 Using virtual environment..."
 echo ""
 
 # Install/upgrade dependencies
 echo "📥 Installing dependencies..."
-pip install --upgrade pip --quiet
-pip install -r gui/requirements.txt --quiet
-pip install py2app --quiet
+"$PIP_BIN" install --upgrade pip --quiet
+"$PIP_BIN" install -r gui/requirements.txt --quiet
+"$PIP_BIN" install py2app --quiet
 echo ""
 
 # Check for app icon
@@ -67,7 +85,7 @@ fi
 
 # Build the app
 echo "🔨 Building application (this may take a few minutes)..."
-python setup.py py2app --quiet 2>&1 | grep -v "copying" || true
+"$PYTHON_BIN" setup.py py2app --quiet 2>&1 | grep -v "copying" || true
 echo ""
 
 # Restore setup.py if we modified it
@@ -107,6 +125,3 @@ else
     echo -e "${RED}❌ Build failed${NC}"
     exit 1
 fi
-
-# Deactivate venv
-deactivate

@@ -93,8 +93,8 @@ fi
 # Rename DMG with version
 echo ""
 echo "📦 Renaming DMG with version..."
-DMG_VERSIONED="Webmix-Sync-Tool-v${NEW_VERSION}.dmg"
-mv "dist/Webmix-Sync-Tool-Installer.dmg" "dist/${DMG_VERSIONED}"
+DMG_VERSIONED="Webmix-Sync-Starter-v${NEW_VERSION}.dmg"
+mv "dist/Webmix-Sync-Starter-Installer.dmg" "dist/${DMG_VERSIONED}"
 echo -e "${GREEN}✓ Created: dist/${DMG_VERSIONED}${NC}"
 
 # Calculate size and checksum

@@ -15,9 +15,9 @@ brew install fswatch rsync
 
 ## Step 2: Install the Application
 
-1. Download `Webmix-Sync-Tool-vX.X.X.dmg`
+1. Download `Webmix-Sync-Starter-vX.X.X.dmg`
 2. Double-click the DMG file to open it
-3. Drag "Webmix Sync Tool" to your Applications folder
+3. Drag "Webmix Sync Starter" to your Applications folder
 4. Eject the DMG
 
 ## Step 3: Bypass macOS Security (First Launch Only)

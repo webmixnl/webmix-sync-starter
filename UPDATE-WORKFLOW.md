@@ -64,7 +64,7 @@ open "dist/Webmix Sync Tool.app"
 ./create-dmg.sh
 
 # Rename to include version
-mv "dist/Webmix-Sync-Tool-Installer.dmg" "dist/Webmix-Sync-Tool-v1.0.1.dmg"
+mv "dist/Webmix-Sync-Starter-Installer.dmg" "dist/Webmix-Sync-Starter-v1.0.1.dmg"
 ```
 
 ### 6. Distribute to Colleagues
@@ -72,7 +72,7 @@ mv "dist/Webmix-Sync-Tool-Installer.dmg" "dist/Webmix-Sync-Tool-v1.0.1.dmg"
 **Option A: Shared Drive/Cloud Storage**
 ```bash
 # Copy to shared location
-cp "dist/Webmix-Sync-Tool-v1.0.1.dmg" "/path/to/shared/drive/"
+cp "dist/Webmix-Sync-Starter-v1.0.1.dmg" "/path/to/shared/drive/"
 ```
 
 **Option B: Email/Slack**
@@ -204,7 +204,7 @@ For critical bugs:
 ./build-app.sh && ./create-dmg.sh
 
 # 4. Rename
-mv dist/Webmix-Sync-Tool-Installer.dmg dist/Webmix-Sync-Tool-v1.0.2-hotfix.dmg
+mv dist/Webmix-Sync-Starter-Installer.dmg dist/Webmix-Sync-Starter-v1.0.2-hotfix.dmg
 
 # 5. Distribute immediately with "URGENT" in subject
 ```
@@ -214,8 +214,8 @@ mv dist/Webmix-Sync-Tool-Installer.dmg dist/Webmix-Sync-Tool-v1.0.2-hotfix.dmg
 Store released versions:
 ```
 releases/
-├── Webmix-Sync-Tool-v1.0.0.dmg
-├── Webmix-Sync-Tool-v1.0.1.dmg
+├── Webmix-Sync-Starter-v1.0.0.dmg
+├── Webmix-Sync-Starter-v1.0.1.dmg
 └── CHANGELOG.md
 ```
 

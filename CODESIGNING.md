@@ -3,7 +3,7 @@
 ## The Problem
 
 When distributing the app to colleagues, macOS Gatekeeper blocks it with:
-> "Apple could not verify 'Webmix Sync Tool.app' is free of malware"
+> "Apple could not verify 'Webmix Sync Starter.app' is free of malware"
 
 This happens because the app is not signed with an Apple Developer certificate.
 
@@ -13,7 +13,7 @@ This happens because the app is not signed with an Apple Developer certificate.
 
 **Method A: Command Line (Recommended)**
 ```bash
-sudo xattr -rd com.apple.quarantine "/Applications/Webmix Sync Tool.app"
+sudo xattr -rd com.apple.quarantine "/Applications/Webmix Sync Starter.app"
 ```
 
 **Method B: GUI**
@@ -27,13 +27,13 @@ sudo xattr -rd com.apple.quarantine "/Applications/Webmix Sync Tool.app"
 Sign the app locally after building (doesn't require Apple Developer account):
 
 ```bash
-codesign --force --deep --sign - "dist/Webmix Sync Tool.app"
+codesign --force --deep --sign - "dist/Webmix Sync Starter.app"
 ```
 
 Add this to your build process in `build-app.sh`:
 ```bash
 # After building, add this line:
-codesign --force --deep --sign - "dist/Webmix Sync Tool.app"
+codesign --force --deep --sign - "dist/Webmix Sync Starter.app"
 ```
 
 **Note:** Ad-hoc signing helps but doesn't fully solve Gatekeeper issues. Users may still need to bypass Gatekeeper on first launch.
@@ -60,17 +60,17 @@ For professional distribution without security warnings:
 4. **Notarize the app** (Required for macOS 10.15+)
    ```bash
    # Create a ZIP
-   ditto -c -k --keepParent "dist/Webmix Sync Tool.app" "Webmix-Sync-Tool.zip"
+   ditto -c -k --keepParent "dist/Webmix Sync Starter.app" "Webmix-Sync-Starter.zip"
    
    # Submit for notarization
-   xcrun notarytool submit "Webmix-Sync-Tool.zip" \
+   xcrun notarytool submit "Webmix-Sync-Starter.zip" \
      --apple-id "your-email@example.com" \
      --team-id "TEAM_ID" \
      --password "app-specific-password" \
      --wait
    
    # Staple the notarization
-   xcrun stapler staple "dist/Webmix Sync Tool.app"
+   xcrun stapler staple "dist/Webmix Sync Starter.app"
    ```
 
 5. **Update build-app.sh**
@@ -79,7 +79,7 @@ For professional distribution without security warnings:
    echo "🔐 Signing application..."
    codesign --force --deep --sign "Developer ID Application: Your Name (TEAM_ID)" \
      --options runtime \
-     "dist/Webmix Sync Tool.app"
+     "dist/Webmix Sync Starter.app"
    
    if [ $? -eq 0 ]; then
        echo "✓ App signed successfully"
@@ -94,12 +94,12 @@ Include these instructions with the DMG:
 
 ### Installation Instructions
 
-1. **Download** `Webmix-Sync-Tool-vX.X.X.dmg`
+1. **Download** `Webmix-Sync-Starter-vX.X.X.dmg`
 2. **Open** the DMG file
 3. **Drag** the app to Applications folder
 4. **Important:** Before opening, run this command in Terminal:
    ```bash
-   sudo xattr -rd com.apple.quarantine "/Applications/Webmix Sync Tool.app"
+   sudo xattr -rd com.apple.quarantine "/Applications/Webmix Sync Starter.app"
    ```
 5. **Open** the app from Applications folder
 
@@ -107,7 +107,7 @@ Include these instructions with the DMG:
 
 ### First Launch
 The app will ask for your WordPress credentials and create its settings in:
-`~/Library/Application Support/Webmix Sync Tool/`
+`~/Library/Application Support/Webmix Sync Starter/`
 
 Your settings will persist across app updates.
 

@@ -441,7 +441,12 @@ class ConfigureSiteDialog(QDialog):
             self.ssh_port_input.setText(existing_config.get('SSH_PORT', '22'))
             self.local_root_input.setText(existing_config.get('LOCAL_ROOT', ''))
             self.remote_root_input.setText(existing_config.get('REMOTE_ROOT', ''))
-            self.sync_items_input.setPlainText(existing_config.get('SYNC_ITEMS', '').replace(' ', '\n'))
+            # Parse SYNC_ITEMS - handle both space-separated (old) and actual newlines (new)
+            sync_items_raw = existing_config.get('SYNC_ITEMS', '')
+            # If it contains spaces but no newlines, convert spaces to newlines (backwards compat)
+            if ' ' in sync_items_raw and '\n' not in sync_items_raw:
+                sync_items_raw = sync_items_raw.replace(' ', '\n')
+            self.sync_items_input.setPlainText(sync_items_raw)
             self.delete_check.setChecked(existing_config.get('RSYNC_DELETE', '0') == '1')
         else:
             # Load defaults from settings
@@ -486,7 +491,20 @@ class ConfigureSiteDialog(QDialog):
                 line = line.strip()
                 if line and not line.startswith('#') and '=' in line:
                     key, value = line.split('=', 1)
-                    config[key.strip()] = value.strip().strip('"')
+                    key = key.strip()
+                    value = value.strip()
+                    
+                    # Handle bash $'...' syntax for SYNC_ITEMS
+                    if value.startswith("$'") and value.endswith("'"):
+                        # Remove $' and trailing '
+                        value = value[2:-1]
+                        # Convert escaped newlines to actual newlines
+                        value = value.replace('\\n', '\n')
+                    else:
+                        # Normal quoted value
+                        value = value.strip('"')
+                    
+                    config[key] = value
         
         return config
     
@@ -518,9 +536,9 @@ class ConfigureSiteDialog(QDialog):
         server_list = self.site_data.get('server', [])
         server_ip = server_list[0].get('ip', '') if server_list else ''
         
-        # Convert multi-line sync items to space-separated
+        # Convert multi-line sync items to newline-separated for bash
         sync_items_lines = self.sync_items_input.toPlainText().strip().split('\n')
-        sync_items = ' '.join([line.strip() for line in sync_items_lines if line.strip()])
+        sync_items = '\n'.join([line.strip() for line in sync_items_lines if line.strip()])
         
         return {
             'site_key': self.site_data.get('title', ''),
@@ -723,14 +741,24 @@ class SettingsDialog(QDialog):
     def closeEvent(self, event):
         """Handle dialog close - wait for auth thread to finish"""
         if self.auth_thread and self.auth_thread.isRunning():
-            self.auth_thread.wait(2000)  # Wait up to 2 seconds
+            self.auth_thread.blockSignals(True)
+            if not self.auth_thread.wait(2000):
+                self.auth_thread.terminate()
+                self.auth_thread.wait(1000)
+            self.auth_thread.deleteLater()
+            self.auth_thread = None
         super().closeEvent(event)
     
     def save_and_close(self):
         """Save settings and close dialog"""
         # Wait for any running auth thread to complete
         if self.auth_thread and self.auth_thread.isRunning():
-            self.auth_thread.wait(2000)
+            self.auth_thread.blockSignals(True)
+            if not self.auth_thread.wait(2000):
+                self.auth_thread.terminate()
+                self.auth_thread.wait(1000)
+            self.auth_thread.deleteLater()
+            self.auth_thread = None
         
         # Save WordPress settings
         self.settings_manager.set('wp_url', self.wp_url_input.text().strip())
@@ -767,6 +795,7 @@ class CommandThread(QThread):
         self.command = command
         self.cwd = cwd
         self.process = None
+        self._stopping = False
         
     def run(self):
         try:
@@ -779,24 +808,93 @@ class CommandThread(QThread):
                 cwd=str(self.cwd)
             )
             
-            for line in iter(self.process.stdout.readline, ''):
-                if line:
-                    self.output_signal.emit(line)
+            # Read output with interruptible checking
+            while not self._stopping and self.process.poll() is None:
+                try:
+                    # Use a small timeout to make readline interruptible
+                    import select
+                    import sys
+                    
+                    # Check if data is available (non-blocking check)
+                    if sys.platform != 'win32':
+                        ready, _, _ = select.select([self.process.stdout], [], [], 0.1)
+                        if ready:
+                            line = self.process.stdout.readline()
+                            if line:
+                                self.output_signal.emit(line)
+                    else:
+                        # On Windows, just read with a check
+                        line = self.process.stdout.readline()
+                        if line:
+                            self.output_signal.emit(line)
+                except (ValueError, OSError):
+                    # Pipe closed - exit cleanly
+                    break
+                except:
+                    break
             
-            return_code = self.process.wait()
+            # Read any remaining output only if not stopping
+            if not self._stopping:
+                try:
+                    # Try to read remaining data with timeout
+                    import sys
+                    if sys.platform != 'win32':
+                        remaining_lines = []
+                        while True:
+                            ready, _, _ = select.select([self.process.stdout], [], [], 0.05)
+                            if not ready:
+                                break
+                            line = self.process.stdout.readline()
+                            if not line:
+                                break
+                            remaining_lines.append(line)
+                        for line in remaining_lines:
+                            self.output_signal.emit(line)
+                except:
+                    pass
+            
+            # Get final return code
+            if self.process.poll() is not None:
+                return_code = self.process.returncode
+            else:
+                return_code = 0
+                
             self.finished_signal.emit(return_code)
             
         except Exception as e:
-            self.output_signal.emit(f"\nError: {e}\n")
+            if not self._stopping:
+                self.output_signal.emit(f"\nError: {e}\n")
             self.finished_signal.emit(1)
     
     def stop(self):
+        """Stop the thread and its process - non-blocking"""
+        self._stopping = True
         if self.process and self.process.poll() is None:
-            self.process.terminate()
             try:
-                self.process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
+                # Close stdout to unblock any read operations immediately
+                if self.process.stdout:
+                    self.process.stdout.close()
+            except:
+                pass
+            
+            # Terminate the process (don't wait - let thread detect it)
+            try:
+                self.process.terminate()
+            except:
+                pass
+            
+            # Start a timer to kill if it doesn't terminate quickly
+            import threading
+            def force_kill():
+                try:
+                    if self.process and self.process.poll() is None:
+                        self.process.kill()
+                except:
+                    pass
+            
+            kill_timer = threading.Timer(1.0, force_kill)
+            kill_timer.daemon = True
+            kill_timer.start()
 
 class NewSiteDialog(QDialog):
     """Dialog for creating a new site configuration"""
@@ -1061,6 +1159,7 @@ class WPSyncGUI(QMainWindow):
         # Thread tracking
         self.current_thread = None
         self.watch_thread = None
+        self._stopping_watch = False
         self.startup_auth_thread = None
         self.fetch_sites_thread = None
         self.api_sites_data = []  # Store API sites data
@@ -1560,7 +1659,9 @@ class WPSyncGUI(QMainWindow):
                 f.write(f'SSH_USER="{config["ssh_user"]}"\n')
                 f.write(f'LOCAL_ROOT="{config["local_root"]}"\n')
                 f.write(f'REMOTE_ROOT="{config["remote_root"]}"\n')
-                f.write(f'SYNC_ITEMS="{config["sync_items"]}"\n')
+                # Use bash $'...\n...' syntax for multi-line SYNC_ITEMS
+                sync_items_escaped = config["sync_items"].replace('\n', '\\n')
+                f.write(f"SYNC_ITEMS=$'{sync_items_escaped}'\n")
                 f.write(f'RSYNC_DELETE="{config["rsync_delete"]}"\n')
                 f.write('DEBOUNCE_SECONDS="3"\n')
             
@@ -1627,11 +1728,23 @@ class WPSyncGUI(QMainWindow):
         
         # Load sites (will show all from API, marked as configured or not)
         self.load_sites()
+        
+        # Cleanup the thread
+        if self.fetch_sites_thread:
+            self.fetch_sites_thread.blockSignals(True)
+            self.fetch_sites_thread.deleteLater()
+            self.fetch_sites_thread = None
     
     def handle_api_sites(self, success, sites_data, message):
         """Handle sites fetched from API (manual refresh)"""
         self.sync_api_btn.setEnabled(True)
         self.sync_api_btn.setText("Sync from API")
+        
+        # Cleanup the thread first
+        if self.fetch_sites_thread:
+            self.fetch_sites_thread.blockSignals(True)
+            self.fetch_sites_thread.deleteLater()
+            self.fetch_sites_thread = None
         
         if not success:
             self.log_output(f"✗ {message}\n", "error")
@@ -1686,7 +1799,9 @@ class WPSyncGUI(QMainWindow):
                     f.write(f'SSH_USER="{config["ssh_user"]}"\n')
                     f.write(f'LOCAL_ROOT="{config["local_root"]}"\n')
                     f.write(f'REMOTE_ROOT="{config["remote_root"]}"\n')
-                    f.write(f'SYNC_ITEMS="{config["sync_items"]}"\n')
+                    # Use bash $'...\n...' syntax for multi-line SYNC_ITEMS
+                    sync_items_escaped = config["sync_items"].replace('\n', '\\n')
+                    f.write(f"SYNC_ITEMS=$'{sync_items_escaped}'\n")
                     f.write(f'RSYNC_DELETE="{config["rsync_delete"]}"\n')
                     f.write('DEBOUNCE_SECONDS="3"\n')
                 
@@ -1768,7 +1883,20 @@ class WPSyncGUI(QMainWindow):
                     line = line.strip()
                     if line and not line.startswith('#') and '=' in line:
                         key, value = line.split('=', 1)
-                        existing_config[key.strip()] = value.strip().strip('"')
+                        key = key.strip()
+                        value = value.strip()
+                        
+                        # Handle bash $'...' syntax for SYNC_ITEMS
+                        if value.startswith("$'") and value.endswith("'"):
+                            # Remove $' and trailing '
+                            value = value[2:-1]
+                            # Convert escaped newlines to actual newlines
+                            value = value.replace('\\n', '\n')
+                        else:
+                            # Normal quoted value
+                            value = value.strip('"')
+                        
+                        existing_config[key] = value
             
             site_data = {
                 'title': site_key,
@@ -1793,7 +1921,9 @@ class WPSyncGUI(QMainWindow):
                     f.write(f'SSH_USER="{config["ssh_user"]}"\n')
                     f.write(f'LOCAL_ROOT="{config["local_root"]}"\n')
                     f.write(f'REMOTE_ROOT="{config["remote_root"]}"\n')
-                    f.write(f'SYNC_ITEMS="{config["sync_items"]}"\n')
+                    # Use bash $'...\n...' syntax for multi-line SYNC_ITEMS
+                    sync_items_escaped = config["sync_items"].replace('\n', '\\n')
+                    f.write(f"SYNC_ITEMS=$'{sync_items_escaped}'\n")
                     f.write(f'RSYNC_DELETE="{config["rsync_delete"]}"\n')
                     f.write('DEBOUNCE_SECONDS="3"\n')
                 
@@ -1833,7 +1963,16 @@ class WPSyncGUI(QMainWindow):
                     line = line.strip()
                     if line and not line.startswith('#') and '=' in line:
                         key, value = line.split('=', 1)
-                        config[key.strip()] = value.strip().strip('"')
+                        key = key.strip()
+                        value = value.strip()
+                        
+                        # Handle bash $'...' syntax
+                        if value.startswith("$'") and value.endswith("'"):
+                            value = value[2:-1].replace('\\n', '\n')
+                        else:
+                            value = value.strip('"')
+                        
+                        config[key] = value
             
             host = config.get('SSH_HOST', 'N/A')
             user = config.get('SSH_USER', 'N/A')
@@ -1882,6 +2021,12 @@ class WPSyncGUI(QMainWindow):
     
     def handle_startup_auth(self, success, message):
         """Handle authentication result on startup"""
+        # Cleanup the auth thread first
+        if self.startup_auth_thread:
+            self.startup_auth_thread.blockSignals(True)
+            self.startup_auth_thread.deleteLater()
+            self.startup_auth_thread = None
+            
         if success:
             self.log_output(f"✓ {message}\n", "success")
             self.settings_manager.set('authenticated', True)
@@ -2043,34 +2188,72 @@ class WPSyncGUI(QMainWindow):
         self.statusBar().showMessage("⚡ Watch mode active")
     
     def stop_watch(self):
-        """Stop watch mode"""
-        if self.watch_thread:
+        """Stop watch mode - non-blocking"""
+        if self.watch_thread and self.watch_thread.isRunning():
             self.log_output("\nStopping watch mode...\n", "warning")
+            self._stopping_watch = True
+            
+            # Update UI immediately to show stopping state
+            self.watch_btn.setText("⏹ Stopping...")
+            self.watch_btn.setEnabled(False)
+            self.statusBar().showMessage("Stopping watch...")
+            
+            # Stop the thread (terminates subprocess)
             self.watch_thread.stop()
-            self.watch_thread.wait()
+            
+            # Set a safety timeout in case the thread doesn't finish
+            QTimer.singleShot(3000, self._force_watch_cleanup)
+            
+            # Don't wait here - let on_watch_finished handle cleanup
+            # The thread will finish shortly and emit finished_signal
+        elif not self.watch_thread:
+            # Already stopped, just update UI
+            self._reset_watch_ui()
+    
+    def _force_watch_cleanup(self):
+        """Force cleanup if watch thread doesn't stop gracefully"""
+        if self._stopping_watch and self.watch_thread:
+            self.log_output("\n⚠ Force stopping watch thread...\n", "warning")
+            try:
+                self.watch_thread.terminate()
+                self.watch_thread.blockSignals(True)
+                self.watch_thread.deleteLater()
+            except:
+                pass
             self.watch_thread = None
-        
-        self.watch_btn.setText("👁 Watch")
-        self.watch_btn.setObjectName("watchBtn")
-        self.watch_btn.setStyleSheet("")
-        self.watch_btn.style().unpolish(self.watch_btn)
-        self.watch_btn.style().polish(self.watch_btn)
-        self.pull_btn.setEnabled(True)
-        self.push_btn.setEnabled(True)
-        self.test_connection_btn.setEnabled(True)
-        # Keep SSH, maintenance, and dev env buttons disabled
-        self.ssh_btn.setEnabled(True)
-        self.maintenance_btn.setEnabled(False)
-        self.dev_env_btn.setEnabled(False)
-        self.statusBar().showMessage("Watch stopped")
+            self._stopping_watch = False
+            self._reset_watch_ui()
     
     def on_watch_finished(self, return_code):
         """Handle watch mode completion"""
+        # Only process if we still have a watch thread reference
+        if not self.watch_thread:
+            return
+            
+        if self._stopping_watch:
+            self.log_output("\n✓ Watch mode stopped\n", "info")
+        elif return_code != 0:
+            self.log_output(f"\n✗ Watch mode exited with code {return_code}\n", "error")
+        
+        self._stopping_watch = False
+        self._reset_watch_ui()
+        
+        # Properly cleanup the watch thread
+        try:
+            self.watch_thread.blockSignals(True)
+            self.watch_thread.deleteLater()
+        except:
+            pass
+        self.watch_thread = None
+    
+    def _reset_watch_ui(self):
+        """Reset watch button and UI to ready state"""
         self.watch_btn.setText("👁 Watch")
         self.watch_btn.setObjectName("watchBtn")
         self.watch_btn.setStyleSheet("")
         self.watch_btn.style().unpolish(self.watch_btn)
         self.watch_btn.style().polish(self.watch_btn)
+        self.watch_btn.setEnabled(True)
         self.pull_btn.setEnabled(True)
         self.push_btn.setEnabled(True)
         self.test_connection_btn.setEnabled(True)
@@ -2100,7 +2283,16 @@ class WPSyncGUI(QMainWindow):
                     line = line.strip()
                     if line and not line.startswith('#') and '=' in line:
                         key, value = line.split('=', 1)
-                        config[key.strip()] = value.strip().strip('"')
+                        key = key.strip()
+                        value = value.strip()
+                        
+                        # Handle bash $'...' syntax
+                        if value.startswith("$'") and value.endswith("'"):
+                            value = value[2:-1].replace('\\n', '\n')
+                        else:
+                            value = value.strip('"')
+                        
+                        config[key] = value
             
             ssh_host = config.get('SSH_HOST', '')
             ssh_port = config.get('SSH_PORT', '22')
@@ -2155,7 +2347,16 @@ class WPSyncGUI(QMainWindow):
                     line = line.strip()
                     if line and not line.startswith('#') and '=' in line:
                         key, value = line.split('=', 1)
-                        config[key.strip()] = value.strip().strip('"')
+                        key = key.strip()
+                        value = value.strip()
+                        
+                        # Handle bash $'...' syntax
+                        if value.startswith("$'") and value.endswith("'"):
+                            value = value[2:-1].replace('\\n', '\n')
+                        else:
+                            value = value.strip('"')
+                        
+                        config[key] = value
             
             ssh_host = config.get('SSH_HOST', '')
             ssh_port = config.get('SSH_PORT', '22')
@@ -2259,7 +2460,12 @@ class WPSyncGUI(QMainWindow):
             self.statusBar().showMessage("Error occurred")
         
         self.update_button_states(True)
-        self.current_thread = None
+        
+        # Properly cleanup the thread
+        if self.current_thread:
+            self.current_thread.blockSignals(True)
+            self.current_thread.deleteLater()
+            self.current_thread = None
     
     def stop_current_process(self):
         """Stop the currently running process"""
@@ -2302,6 +2508,25 @@ class WPSyncGUI(QMainWindow):
     
     def closeEvent(self, event):
         """Handle window close"""
+        # Helper function to safely cleanup a thread
+        def cleanup_thread(thread, timeout=3000):
+            if thread and thread.isRunning():
+                try:
+                    # Disconnect all signals to prevent crashes during cleanup
+                    thread.blockSignals(True)
+                    # Stop the thread if it has a stop method
+                    if hasattr(thread, 'stop'):
+                        thread.stop()
+                    # Wait for thread to finish
+                    if not thread.wait(timeout):
+                        # Thread didn't finish, try to terminate
+                        thread.terminate()
+                        thread.wait(1000)
+                    # Schedule for deletion
+                    thread.deleteLater()
+                except:
+                    pass
+                    
         if (self.watch_thread and self.watch_thread.isRunning()):
             reply = QMessageBox.question(
                 self, "Watch Running",
@@ -2309,27 +2534,26 @@ class WPSyncGUI(QMainWindow):
                 QMessageBox.Yes | QMessageBox.No
             )
             if reply == QMessageBox.Yes:
-                if self.watch_thread:
-                    self.watch_thread.stop()
-                    self.watch_thread.wait()
-                if self.current_thread:
-                    self.current_thread.stop()
-                    self.current_thread.wait()
-                if self.startup_auth_thread and self.startup_auth_thread.isRunning():
-                    self.startup_auth_thread.wait(2000)
-                if self.fetch_sites_thread and self.fetch_sites_thread.isRunning():
-                    self.fetch_sites_thread.wait(2000)
+                cleanup_thread(self.watch_thread)
+                cleanup_thread(self.current_thread)
+                cleanup_thread(self.startup_auth_thread, 2000)
+                cleanup_thread(self.fetch_sites_thread, 2000)
+                # Clear references
+                self.watch_thread = None
+                self.current_thread = None
+                self.startup_auth_thread = None
+                self.fetch_sites_thread = None
                 event.accept()
             else:
                 event.ignore()
         else:
-            if self.current_thread:
-                self.current_thread.stop()
-                self.current_thread.wait()
-            if self.startup_auth_thread and self.startup_auth_thread.isRunning():
-                self.startup_auth_thread.wait(2000)
-            if self.fetch_sites_thread and self.fetch_sites_thread.isRunning():
-                self.fetch_sites_thread.wait(2000)
+            cleanup_thread(self.current_thread)
+            cleanup_thread(self.startup_auth_thread, 2000)
+            cleanup_thread(self.fetch_sites_thread, 2000)
+            # Clear references
+            self.current_thread = None
+            self.startup_auth_thread = None
+            self.fetch_sites_thread = None
             event.accept()
 
 def main():
