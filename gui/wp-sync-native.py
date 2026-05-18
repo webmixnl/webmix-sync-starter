@@ -1491,6 +1491,12 @@ class WPSyncGUI(QMainWindow):
         self.ssh_btn.clicked.connect(self.open_ssh_terminal)
         site_secondary_row.addWidget(self.ssh_btn)
         
+        self.open_in_editor_btn = QPushButton("📝 Open in Editor")
+        self.open_in_editor_btn.setMinimumHeight(30)
+        self.open_in_editor_btn.setEnabled(True)
+        self.open_in_editor_btn.clicked.connect(self.open_in_editor)
+        site_secondary_row.addWidget(self.open_in_editor_btn)
+        
         site_actions_layout.addLayout(site_secondary_row)
         
         site_actions_group.setLayout(site_actions_layout)
@@ -2326,6 +2332,105 @@ class WPSyncGUI(QMainWindow):
                 f"Failed to open SSH terminal:\n{e}"
             )
             self.log_output(f"\n✗ Error opening SSH terminal: {e}\n", "error")
+    
+    def open_in_editor(self):
+        """Open the selected site's local folder in VS Code or default code editor"""
+        site_key = self.site_combo.currentData()
+        if not site_key:
+            QMessageBox.warning(self, "No Site", "Please select a site first.")
+            return
+        
+        # Read site configuration to get LOCAL_ROOT
+        site_file = self.sites_dir / f"{site_key}.env"
+        if not site_file.exists():
+            QMessageBox.warning(self, "Site Not Found", f"Configuration file not found for {site_key}")
+            return
+        
+        try:
+            config = {}
+            with open(site_file, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#') and '=' in line:
+                        key, value = line.split('=', 1)
+                        key = key.strip()
+                        value = value.strip()
+                        
+                        # Handle bash $'...' syntax
+                        if value.startswith("$'") and value.endswith("'"):
+                            value = value[2:-1].replace('\\n', '\n')
+                        else:
+                            value = value.strip('"')
+                        
+                        config[key] = value
+            
+            local_root = config.get('LOCAL_ROOT', '')
+            if not local_root:
+                QMessageBox.warning(
+                    self, "No Local Path",
+                    "LOCAL_ROOT is not configured for this site.\n\n"
+                    "Please configure the site first."
+                )
+                return
+            
+            # Expand ~ to user's home directory
+            local_path = Path(local_root).expanduser()
+            
+            # Check if path exists
+            if not local_path.exists():
+                reply = QMessageBox.question(
+                    self, "Path Not Found",
+                    f"Local path does not exist:\n{local_path}\n\n"
+                    "Do you want to create it?",
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                if reply == QMessageBox.Yes:
+                    try:
+                        local_path.mkdir(parents=True, exist_ok=True)
+                        self.log_output(f"✓ Created directory: {local_path}\n", "success")
+                    except Exception as e:
+                        QMessageBox.critical(self, "Error", f"Failed to create directory:\n{e}")
+                        return
+                else:
+                    return
+            
+            # Try to open in VS Code first
+            self.log_output(f"→ Opening {local_path} in code editor...\n", "info")
+            
+            try:
+                # Try 'code' command (VS Code)
+                result = subprocess.run(
+                    ['which', 'code'],
+                    capture_output=True,
+                    text=True
+                )
+                
+                if result.returncode == 0:
+                    # VS Code is available
+                    subprocess.Popen(['code', str(local_path)])
+                    self.log_output(f"✓ Opened in VS Code: {local_path}\n", "success")
+                else:
+                    # Fall back to system default (Finder on macOS)
+                    subprocess.Popen(['open', str(local_path)])
+                    self.log_output(f"✓ Opened in default editor: {local_path}\n", "success")
+            except Exception as e:
+                # Final fallback: just open the folder
+                try:
+                    subprocess.Popen(['open', str(local_path)])
+                    self.log_output(f"✓ Opened folder: {local_path}\n", "success")
+                except Exception as e2:
+                    QMessageBox.critical(
+                        self, "Error",
+                        f"Failed to open folder:\n{e2}"
+                    )
+                    self.log_output(f"✗ Error opening folder: {e2}\n", "error")
+        
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Error",
+                f"Failed to open in editor:\n{e}"
+            )
+            self.log_output(f"\n✗ Error opening in editor: {e}\n", "error")
     
     def test_connection(self):
         """Test SSH connection to the selected site"""
