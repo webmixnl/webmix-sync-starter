@@ -40,7 +40,8 @@ class SettingsManager:
             "default_local_root": "~/Sites",
             "default_sync_items": "themes\nplugins",
             "ssh_port": 22,
-            "authenticated": False
+            "authenticated": False,
+            "preferred_editor_path": "auto"  # "auto", "finder", or custom path
         }
         
         if self.settings_file.exists():
@@ -662,6 +663,29 @@ class SettingsDialog(QDialog):
         self.sync_items_input.setMaximumHeight(150)
         ssh_layout.addWidget(self.sync_items_input)
         
+        ssh_layout.addSpacing(15)
+        ssh_layout.addWidget(QLabel("<b>Editor Preferences</b>"))
+        
+        editor_form = QFormLayout()
+        editor_layout = QHBoxLayout()
+        self.editor_path_input = QLineEdit()
+        self.editor_path_input.setPlaceholderText("auto (detect VS Code automatically)")
+        editor_layout.addWidget(self.editor_path_input)
+        
+        browse_editor_btn = QPushButton("Browse...")
+        browse_editor_btn.clicked.connect(self.browse_editor)
+        editor_layout.addWidget(browse_editor_btn)
+        
+        editor_form.addRow("Code Editor:", editor_layout)
+        ssh_layout.addLayout(editor_form)
+        
+        ssh_layout.addWidget(QLabel(
+            "<i>Options:</i><br>"
+            "• <b>auto</b> - Automatically detect VS Code<br>"
+            "• <b>finder</b> - Always use Finder/default app<br>"
+            "• Or enter custom path (e.g., /usr/local/bin/code)</i>"
+        ))
+        
         ssh_layout.addStretch()
         tabs.addTab(ssh_tab, "SSH & Sync")
         
@@ -687,10 +711,21 @@ class SettingsDialog(QDialog):
         self.ssh_port_input.setValue(self.settings_manager.get('ssh_port', 22))
         self.local_root_input.setText(self.settings_manager.get('default_local_root', '~/Sites'))
         self.sync_items_input.setPlainText(self.settings_manager.get('default_sync_items', 'themes\nplugins'))
+        self.editor_path_input.setText(self.settings_manager.get('preferred_editor_path', 'auto'))
         
         if self.settings_manager.is_authenticated():
             self.auth_status_label.setText("✓ Previously authenticated")
             self.auth_status_label.setStyleSheet("color: green;")
+    
+    def browse_editor(self):
+        """Browse for code editor executable"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Code Editor",
+            "/usr/local/bin",
+            "All Files (*)"
+        )
+        if file_path:
+            self.editor_path_input.setText(file_path)
     
     def browse_ssh_key(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -770,6 +805,7 @@ class SettingsDialog(QDialog):
         self.settings_manager.set('ssh_port', self.ssh_port_input.value())
         self.settings_manager.set('default_local_root', self.local_root_input.text().strip())
         self.settings_manager.set('default_sync_items', self.sync_items_input.toPlainText().strip())
+        self.settings_manager.set('preferred_editor_path', self.editor_path_input.text().strip() or 'auto')
         
         # Mark as unauthenticated - user must test auth to re-enable
         if (self.settings_manager.get('wp_url') and 
@@ -2333,8 +2369,47 @@ class WPSyncGUI(QMainWindow):
             )
             self.log_output(f"\n✗ Error opening SSH terminal: {e}\n", "error")
     
+    def find_vscode_command(self):
+        """Find VS Code command path, returns None if not found"""
+        # Check common installation locations
+        import os
+        
+        possible_paths = [
+            '/usr/local/bin/code',
+            '/opt/homebrew/bin/code',
+            str(Path.home() / '.local' / 'bin' / 'code'),
+            '/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code'
+        ]
+        
+        # First check if 'code' is in PATH with expanded environment
+        env = os.environ.copy()
+        env['PATH'] = '/usr/local/bin:/opt/homebrew/bin:' + env.get('PATH', '')
+        
+        try:
+            result = subprocess.run(
+                ['which', 'code'],
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=2
+            )
+            
+            if result.returncode == 0 and result.stdout.strip():
+                code_path = result.stdout.strip()
+                if Path(code_path).exists():
+                    return code_path
+        except Exception:
+            pass
+        
+        # Check common paths directly
+        for path in possible_paths:
+            if Path(path).exists():
+                return path
+        
+        return None
+    
     def open_in_editor(self):
-        """Open the selected site's local folder in VS Code or default code editor"""
+        """Open the selected site's local folder in VS Code or configured editor"""
         site_key = self.site_combo.currentData()
         if not site_key:
             QMessageBox.warning(self, "No Site", "Please select a site first.")
@@ -2394,36 +2469,84 @@ class WPSyncGUI(QMainWindow):
                 else:
                     return
             
-            # Try to open in VS Code first
-            self.log_output(f"→ Opening {local_path} in code editor...\n", "info")
+            # Get user's editor preference
+            editor_pref = self.settings_manager.get('preferred_editor_path', 'auto').strip().lower()
+            self.log_output(f"→ Opening {local_path}...\n", "info")
             
-            try:
-                # Try 'code' command (VS Code)
-                result = subprocess.run(
-                    ['which', 'code'],
-                    capture_output=True,
-                    text=True
-                )
-                
-                if result.returncode == 0:
-                    # VS Code is available
-                    subprocess.Popen(['code', str(local_path)])
-                    self.log_output(f"✓ Opened in VS Code: {local_path}\n", "success")
+            import os
+            env = os.environ.copy()
+            env['PATH'] = '/usr/local/bin:/opt/homebrew/bin:' + env.get('PATH', '')
+            
+            editor_command = None
+            editor_name = "folder"
+            
+            # Determine which editor to use
+            if editor_pref == 'finder' or editor_pref == 'open':
+                # User explicitly wants Finder/default app
+                pass
+            elif editor_pref == 'auto' or editor_pref == '':
+                # Auto-detect VS Code
+                editor_command = self.find_vscode_command()
+                if editor_command:
+                    editor_name = "VS Code"
+                    self.log_output(f"  Found VS Code at: {editor_command}\n", "info")
                 else:
-                    # Fall back to system default (Finder on macOS)
+                    self.log_output(f"  VS Code not found, using default app\n", "info")
+            else:
+                # User specified a custom path
+                custom_path = Path(editor_pref).expanduser()
+                if custom_path.exists():
+                    editor_command = str(custom_path)
+                    editor_name = custom_path.name
+                    self.log_output(f"  Using custom editor: {editor_command}\n", "info")
+                else:
+                    self.log_output(f"  ⚠ Custom editor not found: {editor_pref}\n", "warning")
+                    self.log_output(f"  Falling back to default app\n", "info")
+            
+            # Open with the determined editor
+            try:
+                if editor_command:
+                    # Use specific code editor
+                    import time
+                    process = subprocess.Popen(
+                        [editor_command, str(local_path)],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        env=env
+                    )
+                    
+                    # Wait briefly to check if it started successfully
+                    time.sleep(0.3)
+                    poll = process.poll()
+                    
+                    if poll is None or poll == 0:
+                        self.log_output(f"✓ Opened in {editor_name}\n", "success")
+                    else:
+                        stdout, stderr = process.communicate(timeout=1)
+                        self.log_output(f"✗ {editor_name} exited with code {poll}\n", "error")
+                        if stderr:
+                            self.log_output(f"  Error: {stderr.strip()}\n", "error")
+                        # Fall back to Finder
+                        subprocess.Popen(['open', str(local_path)])
+                        self.log_output(f"→ Opened in Finder instead\n", "info")
+                else:
+                    # Use default app (Finder on macOS)
                     subprocess.Popen(['open', str(local_path)])
-                    self.log_output(f"✓ Opened in default editor: {local_path}\n", "success")
+                    self.log_output(f"✓ Opened in Finder\n", "success")
+                    
             except Exception as e:
-                # Final fallback: just open the folder
+                # Final fallback
+                self.log_output(f"✗ Error: {e}\n", "error")
                 try:
                     subprocess.Popen(['open', str(local_path)])
-                    self.log_output(f"✓ Opened folder: {local_path}\n", "success")
+                    self.log_output(f"→ Opened in Finder (fallback)\n", "info")
                 except Exception as e2:
                     QMessageBox.critical(
                         self, "Error",
                         f"Failed to open folder:\n{e2}"
                     )
-                    self.log_output(f"✗ Error opening folder: {e2}\n", "error")
+                    self.log_output(f"✗ Failed to open folder: {e2}\n", "error")
         
         except Exception as e:
             QMessageBox.critical(
