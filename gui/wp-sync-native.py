@@ -41,7 +41,8 @@ class SettingsManager:
             "default_sync_items": "themes\nplugins",
             "ssh_port": 22,
             "authenticated": False,
-            "preferred_editor_path": "auto"  # "auto", "finder", or custom path
+            "preferred_editor_path": "auto",  # "auto", "finder", or custom path
+            "default_debounce_seconds": 3  # Default debounce time for watch mode
         }
         
         if self.settings_file.exists():
@@ -415,6 +416,17 @@ class ConfigureSiteDialog(QDialog):
         self.sync_items_input.setMaximumHeight(100)
         layout.addWidget(self.sync_items_input)
         
+        # Debounce seconds
+        debounce_layout = QHBoxLayout()
+        debounce_layout.addWidget(QLabel("Watch debounce (seconds):"))
+        self.debounce_input = QSpinBox()
+        self.debounce_input.setRange(1, 30)
+        self.debounce_input.setValue(3)
+        self.debounce_input.setToolTip("Time to wait before syncing after detecting changes")
+        debounce_layout.addWidget(self.debounce_input)
+        debounce_layout.addStretch()
+        layout.addLayout(debounce_layout)
+        
         # Delete option
         self.delete_check = QCheckBox("Enable delete sync (dangerous)")
         layout.addWidget(self.delete_check)
@@ -449,6 +461,13 @@ class ConfigureSiteDialog(QDialog):
                 sync_items_raw = sync_items_raw.replace(' ', '\n')
             self.sync_items_input.setPlainText(sync_items_raw)
             self.delete_check.setChecked(existing_config.get('RSYNC_DELETE', '0') == '1')
+            
+            # Load debounce time
+            debounce = existing_config.get('DEBOUNCE_SECONDS', '3')
+            try:
+                self.debounce_input.setValue(int(debounce))
+            except ValueError:
+                self.debounce_input.setValue(3)
         else:
             # Load defaults from settings
             # Auto-fill SSH user with site name
@@ -467,6 +486,9 @@ class ConfigureSiteDialog(QDialog):
             
             default_sync_items = self.settings_manager.get('default_sync_items', 'themes\nplugins')
             self.sync_items_input.setPlainText(default_sync_items)
+            
+            default_debounce = self.settings_manager.get('default_debounce_seconds', 3)
+            self.debounce_input.setValue(int(default_debounce))
     
     def load_existing_config(self, site_key):
         """Try to load existing configuration for this site"""
@@ -549,7 +571,8 @@ class ConfigureSiteDialog(QDialog):
             'local_root': self.local_root_input.text().strip(),
             'remote_root': self.remote_root_input.text().strip(),
             'sync_items': sync_items,
-            'rsync_delete': '1' if self.delete_check.isChecked() else '0'
+            'rsync_delete': '1' if self.delete_check.isChecked() else '0',
+            'debounce_seconds': str(self.debounce_input.value())
         }
 
 class SettingsDialog(QDialog):
@@ -686,6 +709,23 @@ class SettingsDialog(QDialog):
             "• Or enter custom path (e.g., /usr/local/bin/code)</i>"
         ))
         
+        ssh_layout.addSpacing(15)
+        ssh_layout.addWidget(QLabel("<b>Watch Mode Defaults</b>"))
+        
+        watch_form = QFormLayout()
+        self.debounce_seconds_input = QSpinBox()
+        self.debounce_seconds_input.setRange(1, 30)
+        self.debounce_seconds_input.setValue(3)
+        self.debounce_seconds_input.setSuffix(" sec")
+        self.debounce_seconds_input.setToolTip("Default time to wait before syncing after detecting file changes")
+        watch_form.addRow("Default Debounce:", self.debounce_seconds_input)
+        ssh_layout.addLayout(watch_form)
+        
+        ssh_layout.addWidget(QLabel(
+            "<i>This sets the default debounce time for new sites.<br>"
+            "You can customize per-site when configuring each site.</i>"
+        ))
+        
         ssh_layout.addStretch()
         tabs.addTab(ssh_tab, "SSH & Sync")
         
@@ -712,6 +752,7 @@ class SettingsDialog(QDialog):
         self.local_root_input.setText(self.settings_manager.get('default_local_root', '~/Sites'))
         self.sync_items_input.setPlainText(self.settings_manager.get('default_sync_items', 'themes\nplugins'))
         self.editor_path_input.setText(self.settings_manager.get('preferred_editor_path', 'auto'))
+        self.debounce_seconds_input.setValue(self.settings_manager.get('default_debounce_seconds', 3))
         
         if self.settings_manager.is_authenticated():
             self.auth_status_label.setText("✓ Previously authenticated")
@@ -806,6 +847,7 @@ class SettingsDialog(QDialog):
         self.settings_manager.set('default_local_root', self.local_root_input.text().strip())
         self.settings_manager.set('default_sync_items', self.sync_items_input.toPlainText().strip())
         self.settings_manager.set('preferred_editor_path', self.editor_path_input.text().strip() or 'auto')
+        self.settings_manager.set('default_debounce_seconds', self.debounce_seconds_input.value())
         
         # Mark as unauthenticated - user must test auth to re-enable
         if (self.settings_manager.get('wp_url') and 
@@ -987,6 +1029,17 @@ class NewSiteDialog(QDialog):
         self.sync_items_input.setMaximumHeight(100)
         layout.addWidget(self.sync_items_input)
         
+        # Debounce seconds
+        debounce_layout = QHBoxLayout()
+        debounce_layout.addWidget(QLabel("Watch debounce (seconds):"))
+        self.debounce_input = QSpinBox()
+        self.debounce_input.setRange(1, 30)
+        self.debounce_input.setValue(3)
+        self.debounce_input.setToolTip("Time to wait before syncing after detecting changes")
+        debounce_layout.addWidget(self.debounce_input)
+        debounce_layout.addStretch()
+        layout.addLayout(debounce_layout)
+        
         # Additional options
         self.delete_check = QCheckBox("Enable delete sync (dangerous)")
         layout.addWidget(self.delete_check)
@@ -1042,7 +1095,8 @@ class NewSiteDialog(QDialog):
             'local_root': self.local_root_input.text().strip(),
             'remote_root': self.remote_root_input.text().strip(),
             'sync_items': sync_items,
-            'rsync_delete': '1' if self.delete_check.isChecked() else '0'
+            'rsync_delete': '1' if self.delete_check.isChecked() else '0',
+            'debounce_seconds': str(self.debounce_input.value())
         }
     
     def load_defaults(self):
@@ -1052,6 +1106,9 @@ class NewSiteDialog(QDialog):
         
         default_sync_items = self.settings_manager.get('default_sync_items', 'themes\nplugins')
         self.sync_items_input.setPlainText(default_sync_items)
+        
+        default_debounce = self.settings_manager.get('default_debounce_seconds', 3)
+        self.debounce_input.setValue(int(default_debounce))
 
 class SelectSiteDialog(QDialog):
     """Dialog for selecting a site from available API sites"""
@@ -1705,7 +1762,8 @@ class WPSyncGUI(QMainWindow):
                 sync_items_escaped = config["sync_items"].replace('\n', '\\n')
                 f.write(f"SYNC_ITEMS=$'{sync_items_escaped}'\n")
                 f.write(f'RSYNC_DELETE="{config["rsync_delete"]}"\n')
-                f.write('DEBOUNCE_SECONDS="3"\n')
+                debounce = config.get('debounce_seconds', '3')
+                f.write(f'DEBOUNCE_SECONDS="{debounce}"\n')
             
             self.log_output(f"\n✓ Configured site: {config['site_key']}\n", "success")
             
@@ -1845,7 +1903,8 @@ class WPSyncGUI(QMainWindow):
                     sync_items_escaped = config["sync_items"].replace('\n', '\\n')
                     f.write(f"SYNC_ITEMS=$'{sync_items_escaped}'\n")
                     f.write(f'RSYNC_DELETE="{config["rsync_delete"]}"\n')
-                    f.write('DEBOUNCE_SECONDS="3"\n')
+                    debounce = config.get('debounce_seconds', '3')
+                    f.write(f'DEBOUNCE_SECONDS="{debounce}"\n')
                 
                 self.log_output(f"✓ Configured site: {config['site_key']}\n", "success")
                 
@@ -1967,7 +2026,8 @@ class WPSyncGUI(QMainWindow):
                     sync_items_escaped = config["sync_items"].replace('\n', '\\n')
                     f.write(f"SYNC_ITEMS=$'{sync_items_escaped}'\n")
                     f.write(f'RSYNC_DELETE="{config["rsync_delete"]}"\n')
-                    f.write('DEBOUNCE_SECONDS="3"\n')
+                    debounce = config.get('debounce_seconds', '3')
+                    f.write(f'DEBOUNCE_SECONDS="{debounce}"\n')
                 
                 self.log_output(f"\n✓ Updated site configuration: {config['site_key']}\n", "success")
                 
