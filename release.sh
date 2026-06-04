@@ -30,6 +30,9 @@ echo ""
 echo "Enter new version number (e.g., 1.0.1):"
 read -r NEW_VERSION
 
+# Trim whitespace
+NEW_VERSION=$(echo "$NEW_VERSION" | xargs)
+
 if [[ -z "$NEW_VERSION" ]]; then
     echo -e "${RED}Error: Version number required${NC}"
     exit 1
@@ -37,7 +40,7 @@ fi
 
 # Validate version format (basic check)
 if ! [[ "$NEW_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    echo -e "${RED}Error: Version must be in format X.Y.Z (e.g., 1.0.1)${NC}"
+    echo -e "${RED}Error: Version must be in format X.Y.Z (e.g., 1.0.12)${NC}"
     exit 1
 fi
 
