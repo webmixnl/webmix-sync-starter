@@ -5,7 +5,7 @@ A native desktop application using PyQt5
 """
 
 # Version - should match setup.py
-APP_VERSION = "1.0.13"
+APP_VERSION = "1.1.0"
 GITHUB_REPO_OWNER = "webmixnl"  # Change this to your GitHub username/org
 GITHUB_REPO_NAME = "webmix-sync-starter"  # Change this to your repo name
 
@@ -356,6 +356,280 @@ class SSHTerminalDialog(QDialog):
         # Let the dialog close - process will be destroyed with it
         event.accept()
 
+class RemoteFolderSelectorDialog(QDialog):
+    """Dialog to fetch and select folders from remote server with navigation"""
+    
+    def __init__(self, ssh_host, ssh_port, ssh_user, remote_path, settings_manager, parent=None):
+        super().__init__(parent)
+        self.ssh_host = ssh_host
+        self.ssh_port = ssh_port
+        self.ssh_user = ssh_user
+        self.base_remote_path = remote_path  # Base path (never changes)
+        self.current_path = remote_path  # Current navigation path
+        self.settings_manager = settings_manager
+        self.selected_items = []
+        
+        self.setWindowTitle("Select Remote Folders/Files")
+        self.setMinimumSize(600, 500)
+        self.init_ui()
+        
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+        
+        # Info label showing base path
+        info_label = QLabel(
+            f"Browsing: <b>{self.ssh_user}@{self.ssh_host}</b>"
+        )
+        info_label.setWordWrap(True)
+        layout.addWidget(info_label)
+        
+        # Navigation bar with current path and up button
+        nav_layout = QHBoxLayout()
+        
+        # Up button
+        self.up_btn = QPushButton("⬆ Up")
+        self.up_btn.setToolTip("Go to parent directory")
+        self.up_btn.clicked.connect(self.go_up)
+        self.up_btn.setEnabled(False)
+        nav_layout.addWidget(self.up_btn)
+        
+        # Current path display
+        self.path_label = QLabel(f"<b>{self.current_path}</b>")
+        self.path_label.setWordWrap(True)
+        self.path_label.setStyleSheet("padding: 5px; background-color: #f0f0f0; border-radius: 3px;")
+        nav_layout.addWidget(self.path_label, 1)
+        
+        layout.addLayout(nav_layout)
+        
+        # List widget for folders/files
+        self.items_list = QListWidget()
+        self.items_list.setSelectionMode(QListWidget.MultiSelection)
+        self.items_list.itemDoubleClicked.connect(self.on_item_double_clicked)
+        layout.addWidget(self.items_list)
+        
+        # Help text
+        help_label = QLabel("💡 Double-click folders to navigate, select items and click OK to add them")
+        help_label.setStyleSheet("color: #666; font-style: italic; font-size: 11px;")
+        help_label.setWordWrap(True)
+        layout.addWidget(help_label)
+        
+        # Status label
+        self.status_label = QLabel("Click 'Fetch' to load folders and files...")
+        self.status_label.setStyleSheet("color: #666; font-style: italic;")
+        layout.addWidget(self.status_label)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        
+        self.fetch_btn = QPushButton("Fetch Folders/Files")
+        self.fetch_btn.clicked.connect(self.fetch_remote_items)
+        button_layout.addWidget(self.fetch_btn)
+        
+        button_layout.addStretch()
+        
+        self.select_all_btn = QPushButton("Select All")
+        self.select_all_btn.clicked.connect(self.select_all_items)
+        self.select_all_btn.setEnabled(False)
+        button_layout.addWidget(self.select_all_btn)
+        
+        self.clear_btn = QPushButton("Clear Selection")
+        self.clear_btn.clicked.connect(self.clear_selection)
+        self.clear_btn.setEnabled(False)
+        button_layout.addWidget(self.clear_btn)
+        
+        layout.addLayout(button_layout)
+        
+        # Dialog buttons
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self.accept_selection)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        
+    def go_up(self):
+        """Navigate to parent directory"""
+        # Get parent directory
+        parent_path = str(Path(self.current_path).parent)
+        
+        # Don't go above the base path
+        if parent_path == self.current_path or len(parent_path) < len(self.base_remote_path):
+            return
+        
+        self.current_path = parent_path
+        self.path_label.setText(f"<b>{self.current_path}</b>")
+        
+        # Enable/disable up button
+        self.up_btn.setEnabled(self.current_path != self.base_remote_path)
+        
+        # Fetch items in new directory
+        self.fetch_remote_items()
+    
+    def on_item_double_clicked(self, item):
+        """Handle double-click on an item to navigate into folders"""
+        item_name = item.data(Qt.UserRole)
+        display_text = item.text()
+        
+        # Check if it's a folder (has folder icon)
+        if display_text.startswith("📁"):
+            # Navigate into this folder
+            self.current_path = str(Path(self.current_path) / item_name)
+            self.path_label.setText(f"<b>{self.current_path}</b>")
+            
+            # Enable up button since we're now inside a subfolder
+            self.up_btn.setEnabled(True)
+            
+            # Fetch items in the new directory
+            self.fetch_remote_items()
+        
+    def fetch_remote_items(self):
+        """Fetch folders and files from remote server via SSH"""
+        self.fetch_btn.setEnabled(False)
+        self.fetch_btn.setText("Fetching...")
+        self.status_label.setText("Connecting to server...")
+        self.items_list.clear()
+        
+        # Build SSH command to list directories and files
+        ssh_key_path = self.settings_manager.get('ssh_key_path', '~/.ssh/id_rsa')
+        ssh_key_expanded = Path(ssh_key_path).expanduser()
+        
+        # Command to list directories first, then files, with type indicator
+        # Lists items in current_path: directories ending with /, regular files without
+        list_cmd = f"cd '{self.current_path}' 2>/dev/null && (ls -1p 2>/dev/null || echo 'ERROR: Cannot access directory')"
+        
+        ssh_command = [
+            'ssh',
+            '-i', str(ssh_key_expanded),
+            '-p', str(self.ssh_port),
+            '-o', 'StrictHostKeyChecking=no',
+            '-o', 'ConnectTimeout=10',
+            f'{self.ssh_user}@{self.ssh_host}',
+            list_cmd
+        ]
+        
+        try:
+            result = subprocess.run(
+                ssh_command,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if result.returncode == 0:
+                output = result.stdout.strip()
+                
+                if 'ERROR: Cannot access directory' in output:
+                    self.status_label.setText("❌ Cannot access remote directory")
+                    self.status_label.setStyleSheet("color: red;")
+                    QMessageBox.warning(
+                        self, "Access Error",
+                        f"Cannot access directory:\n{self.current_path}\n\n"
+                        "Please check the remote path and permissions."
+                    )
+                elif output:
+                    items = [line.strip() for line in output.split('\n') if line.strip()]
+                    
+                    if items:
+                        # Separate folders and files
+                        folders = [item.rstrip('/') for item in items if item.endswith('/')]
+                        files = [item for item in items if not item.endswith('/')]
+                        
+                        # Add folders first
+                        for folder in sorted(folders):
+                            item = QListWidgetItem(f"📁 {folder}")
+                            item.setData(Qt.UserRole, folder)  # Store actual name without icon
+                            self.items_list.addItem(item)
+                        
+                        # Add files
+                        for file in sorted(files):
+                            item = QListWidgetItem(f"📄 {file}")
+                            item.setData(Qt.UserRole, file)  # Store actual name without icon
+                            self.items_list.addItem(item)
+                        
+                        self.status_label.setText(
+                            f"✓ Found {len(folders)} folder(s) and {len(files)} file(s). Select items and click OK."
+                        )
+                        self.status_label.setStyleSheet("color: green;")
+                        self.select_all_btn.setEnabled(True)
+                        self.clear_btn.setEnabled(True)
+                    else:
+                        self.status_label.setText("⚠️ Directory is empty")
+                        self.status_label.setStyleSheet("color: orange;")
+                else:
+                    self.status_label.setText("⚠️ Directory is empty")
+                    self.status_label.setStyleSheet("color: orange;")
+            else:
+                error_msg = result.stderr.strip() if result.stderr else "Unknown error"
+                self.status_label.setText("❌ SSH connection failed")
+                self.status_label.setStyleSheet("color: red;")
+                QMessageBox.critical(
+                    self, "Connection Error",
+                    f"Failed to connect to server:\n{error_msg}"
+                )
+                
+        except subprocess.TimeoutExpired:
+            self.status_label.setText("❌ Connection timeout")
+            self.status_label.setStyleSheet("color: red;")
+            QMessageBox.critical(
+                self, "Timeout",
+                "Connection to server timed out.\n"
+                "Please check your network and server settings."
+            )
+        except Exception as e:
+            self.status_label.setText(f"❌ Error: {str(e)}")
+            self.status_label.setStyleSheet("color: red;")
+            QMessageBox.critical(
+                self, "Error",
+                f"An error occurred:\n{str(e)}"
+            )
+        finally:
+            self.fetch_btn.setEnabled(True)
+            self.fetch_btn.setText("Refresh")
+    
+    def select_all_items(self):
+        """Select all items in the list"""
+        for i in range(self.items_list.count()):
+            self.items_list.item(i).setSelected(True)
+    
+    def clear_selection(self):
+        """Clear all selections"""
+        self.items_list.clearSelection()
+    
+    def accept_selection(self):
+        """Accept selected items with their relative paths"""
+        selected_items = self.items_list.selectedItems()
+        
+        if not selected_items:
+            QMessageBox.warning(
+                self, "No Selection",
+                "Please select at least one folder or file."
+            )
+            return
+        
+        # Get actual names (without icons) from UserRole data and calculate relative paths
+        self.selected_items = []
+        
+        for item in selected_items:
+            item_name = item.data(Qt.UserRole)
+            
+            # Calculate relative path from base_remote_path
+            if self.current_path == self.base_remote_path:
+                # We're at the base level, just use the item name
+                relative_path = item_name
+            else:
+                # We're in a subdirectory, calculate relative path
+                # Get the path relative to base
+                current_relative = Path(self.current_path).relative_to(self.base_remote_path)
+                relative_path = str(current_relative / item_name)
+            
+            self.selected_items.append(relative_path)
+        
+        self.accept()
+    
+    def get_selected_items(self):
+        """Return list of selected folder/file names with relative paths"""
+        return self.selected_items
+
 class ConfigureSiteDialog(QDialog):
     """Dialog for configuring a site pulled from API"""
     
@@ -420,8 +694,16 @@ class ConfigureSiteDialog(QDialog):
         config_group.setLayout(config_layout)
         layout.addWidget(config_group)
         
-        # Sync items
-        layout.addWidget(QLabel("Sync Items (one per line):"))
+        # Sync items with browse button
+        sync_items_header = QHBoxLayout()
+        sync_items_header.addWidget(QLabel("Sync Items (one per line):"))
+        sync_items_header.addStretch()
+        browse_remote_btn = QPushButton("Browse Remote...")
+        browse_remote_btn.setToolTip("Connect to server and select folders/files")
+        browse_remote_btn.clicked.connect(self.browse_remote_folders)
+        sync_items_header.addWidget(browse_remote_btn)
+        layout.addLayout(sync_items_header)
+        
         self.sync_items_input = QPlainTextEdit()
         self.sync_items_input.setPlaceholderText("themes\nplugins")
         self.sync_items_input.setMaximumHeight(100)
@@ -548,6 +830,63 @@ class ConfigureSiteDialog(QDialog):
         )
         if folder:
             self.local_root_input.setText(folder)
+    
+    def browse_remote_folders(self):
+        """Open dialog to browse and select remote folders/files"""
+        # Get current connection settings
+        ssh_host_list = self.site_data.get('server', [])
+        ssh_host = ssh_host_list[0].get('ip', '') if ssh_host_list else ''
+        ssh_user = self.ssh_user_input.text().strip()
+        ssh_port = self.ssh_port_input.text().strip() or '22'
+        remote_root = self.remote_root_input.text().strip()
+        
+        # Validate required fields
+        if not ssh_host:
+            QMessageBox.warning(
+                self, "Missing Information",
+                "Server IP is not available from API data."
+            )
+            return
+        
+        if not ssh_user:
+            QMessageBox.warning(
+                self, "Missing Information",
+                "Please enter SSH User before browsing remote folders."
+            )
+            self.ssh_user_input.setFocus()
+            return
+        
+        if not remote_root:
+            QMessageBox.warning(
+                self, "Missing Information",
+                "Please enter Remote Root path before browsing."
+            )
+            self.remote_root_input.setFocus()
+            return
+        
+        # Open folder selector dialog
+        dialog = RemoteFolderSelectorDialog(
+            ssh_host, ssh_port, ssh_user, remote_root,
+            self.settings_manager, self
+        )
+        
+        if dialog.exec_() == QDialog.Accepted:
+            selected_items = dialog.get_selected_items()
+            if selected_items:
+                # Update sync items with selected folders/files
+                current_text = self.sync_items_input.toPlainText().strip()
+                
+                # Parse existing items
+                existing_items = set()
+                if current_text:
+                    existing_items = set(line.strip() for line in current_text.split('\n') if line.strip())
+                
+                # Add new items (avoid duplicates)
+                for item in selected_items:
+                    existing_items.add(item)
+                
+                # Update the text field
+                self.sync_items_input.setPlainText('\n'.join(sorted(existing_items)))
     
     def validate_and_accept(self):
         if not self.ssh_user_input.text().strip():
