@@ -58,13 +58,17 @@ if [[ "$CONFIRM" != "y" ]]; then
     exit 0
 fi
 
-# Update version in setup.py
+# Update version in setup.py and gui/wp-sync-native.py
 echo ""
-echo "📝 Updating version in setup.py..."
+echo "📝 Updating version in setup.py and wp-sync-native.py..."
 sed -i.bak "s/'CFBundleVersion': '.*'/'CFBundleVersion': '$NEW_VERSION'/g" setup.py
 sed -i.bak "s/'CFBundleShortVersionString': '.*'/'CFBundleShortVersionString': '$NEW_VERSION'/g" setup.py
 rm setup.py.bak
-echo -e "${GREEN}✓ Version updated to ${NEW_VERSION}${NC}"
+
+sed -i.bak 's/APP_VERSION = ".*"/APP_VERSION = "'$NEW_VERSION'"/g' gui/wp-sync-native.py
+rm gui/wp-sync-native.py.bak
+
+echo -e "${GREEN}✓ Version updated to ${NEW_VERSION} in both files${NC}"
 
 # Clean previous builds
 echo ""
@@ -146,7 +150,7 @@ if [[ $REPLY =~ ^[Yy]$  ]] || [[ -z $REPLY ]]; then
     
     # Commit version changes
     echo "📝 Committing version changes..."
-    git add setup.py
+    git add setup.py gui/wp-sync-native.py
     git commit -m "Release v${NEW_VERSION}" || true
     
     # Create git tag
