@@ -5,8 +5,8 @@ A native desktop application using PyQt5
 """
 
 # Version - should match setup.py
-APP_VERSION = "1.0.10"
-GITHUB_REPO_OWNER = "webmix"  # Change this to your GitHub username/org
+APP_VERSION = "1.0.11"
+GITHUB_REPO_OWNER = "webmixnl"  # Change this to your GitHub username/org
 GITHUB_REPO_NAME = "webmix-sync-starter"  # Change this to your repo name
 
 import sys
@@ -2923,7 +2923,7 @@ class WPSyncGUI(QMainWindow):
                     QMessageBox.information(
                         self,
                         "No Updates",
-                        f"You are running the latest version ({APP_VERSION})\\n\\n{message}"
+                        f"You are running the latest version ({APP_VERSION}) | {message}"
                     )
         
         except Exception as e:
