@@ -1612,6 +1612,14 @@ class WPSyncGUI(QMainWindow):
         
         # Check authentication on startup
         self.check_authentication()
+        
+        # Check for updates automatically on startup (delayed to not interfere with auth)
+        QTimer.singleShot(3000, self.auto_check_for_updates)
+    
+    def auto_check_for_updates(self):
+        """Automatically check for updates on startup (silent if no update available)"""
+        if UPDATE_CHECKER_AVAILABLE:
+            self.check_for_updates(silent=True)
     
     def migrate_user_data(self):
         """Migrate settings and sites from old locations to new location (Application Support)"""
@@ -3228,19 +3236,22 @@ class WPSyncGUI(QMainWindow):
                 )
             return
         
-        # Show progress dialog
-        progress = QProgressDialog("Checking for updates...", None, 0, 0, self)
-        progress.setWindowModality(Qt.WindowModal)
-        progress.setMinimumDuration(0)
-        progress.setCancelButton(None)
-        progress.show()
-        QApplication.processEvents()
+        # Show progress dialog only if not silent
+        progress = None
+        if not silent:
+            progress = QProgressDialog("Checking for updates...", None, 0, 0, self)
+            progress.setWindowModality(Qt.WindowModal)
+            progress.setMinimumDuration(0)
+            progress.setCancelButton(None)
+            progress.show()
+            QApplication.processEvents()
         
         try:
             checker = UpdateChecker(APP_VERSION, GITHUB_REPO_OWNER, GITHUB_REPO_NAME)
             has_update, latest_version, download_url, message = checker.check_for_updates()
             
-            progress.close()
+            if progress:
+                progress.close()
             
             if has_update:
                 reply = QMessageBox.question(
@@ -3266,7 +3277,8 @@ class WPSyncGUI(QMainWindow):
                     )
         
         except Exception as e:
-            progress.close()
+            if progress:
+                progress.close()
             if not silent:
                 QMessageBox.warning(
                     self,
