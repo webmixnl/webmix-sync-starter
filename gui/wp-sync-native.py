@@ -4,6 +4,11 @@ WordPress Sync Native GUI
 A native desktop application using PyQt5
 """
 
+# Version - should match setup.py
+APP_VERSION = "1.0.10"
+GITHUB_REPO_OWNER = "webmix"  # Change this to your GitHub username/org
+GITHUB_REPO_NAME = "webmix-sync-starter"  # Change this to your repo name
+
 import sys
 import subprocess
 import threading
@@ -16,10 +21,16 @@ from PyQt5.QtWidgets import (
     QLabel, QComboBox, QPushButton, QTextEdit, QCheckBox, QMessageBox,
     QGroupBox, QFrame, QDialog, QLineEdit, QFormLayout, QDialogButtonBox,
     QFileDialog, QPlainTextEdit, QMenuBar, QAction, QTabWidget, QSpinBox,
-    QListWidget, QListWidgetItem
+    QListWidget, QListWidgetItem, QProgressDialog
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QProcess
 from PyQt5.QtGui import QFont, QTextCursor, QIcon, QTextCharFormat, QColor
+
+try:
+    from update_checker import UpdateChecker
+    UPDATE_CHECKER_AVAILABLE = True
+except ImportError:
+    UPDATE_CHECKER_AVAILABLE = False
 
 class SettingsManager:
     """Manage application settings"""
@@ -1470,6 +1481,18 @@ class WPSyncGUI(QMainWindow):
         settings_action.triggered.connect(self.open_settings)
         settings_menu.addAction(settings_action)
         
+        # Help menu with update checker
+        help_menu = menubar.addMenu("Help")
+        
+        if UPDATE_CHECKER_AVAILABLE:
+            update_action = QAction("Check for Updates...", self)
+            update_action.triggered.connect(self.check_for_updates)
+            help_menu.addAction(update_action)
+        
+        about_action = QAction(f"About Webmix Sync Starter v{APP_VERSION}", self)
+        about_action.triggered.connect(self.show_about)
+        help_menu.addAction(about_action)
+        
         # Central widget and main layout
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -2843,6 +2866,115 @@ class WPSyncGUI(QMainWindow):
             self.startup_auth_thread = None
             self.fetch_sites_thread = None
             event.accept()
+    
+    def show_about(self):
+        """Show about dialog"""
+        QMessageBox.about(
+            self,
+            "About Webmix Sync Starter",
+            f"<h3>Webmix Sync Starter</h3>"
+            f"<p>Version {APP_VERSION}</p>"
+            f"<p>A tool for syncing WordPress sites via SSH and WP-CLI</p>"
+            f"<p>© 2026 Webmix B.V.</p>"
+        )
+    
+    def check_for_updates(self, silent=False):
+        """Check for app updates from GitHub Releases"""
+        if not UPDATE_CHECKER_AVAILABLE:
+            if not silent:
+                QMessageBox.warning(
+                    self,
+                    "Update Check Unavailable",
+                    "Update checking is not available. Please check manually on GitHub."
+                )
+            return
+        
+        # Show progress dialog
+        progress = QProgressDialog("Checking for updates...", None, 0, 0, self)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setCancelButton(None)
+        progress.show()
+        QApplication.processEvents()
+        
+        try:
+            checker = UpdateChecker(APP_VERSION, GITHUB_REPO_OWNER, GITHUB_REPO_NAME)
+            has_update, latest_version, download_url, message = checker.check_for_updates()
+            
+            progress.close()
+            
+            if has_update:
+                reply = QMessageBox.question(
+                    self,
+                    "Update Available",
+                    f"<h3>New version available!</h3>"
+                    f"<p><b>Current version:</b> {APP_VERSION}</p>"
+                    f"<p><b>Latest version:</b> {latest_version}</p>"
+                    f"<p><b>Release notes:</b></p>"
+                    f"<p>{message[:500]}</p>"
+                    f"<p>Would you like to download and install the update?</p>",
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                
+                if reply == QMessageBox.Yes:
+                    self.download_and_install_update(checker, download_url)
+            else:
+                if not silent:
+                    QMessageBox.information(
+                        self,
+                        "No Updates",
+                        f"You are running the latest version ({APP_VERSION})\\n\\n{message}"
+                    )
+        
+        except Exception as e:
+            progress.close()
+            if not silent:
+                QMessageBox.warning(
+                    self,
+                    "Update Check Failed",
+                    f"Could not check for updates:\\n{str(e)}"
+                )
+    
+    def download_and_install_update(self, checker, download_url):
+        """Download and install an update"""
+        # Create progress dialog for download
+        progress = QProgressDialog("Downloading update...", "Cancel", 0, 100, self)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        
+        def update_progress(downloaded, total):
+            if total > 0:
+                percent = int((downloaded / total) * 100)
+                progress.setValue(percent)
+                QApplication.processEvents()
+                if progress.wasCanceled():
+                    raise Exception("Download cancelled by user")
+        
+        try:
+            success, dmg_path, error = checker.download_update(download_url, update_progress)
+            progress.close()
+            
+            if success:
+                success, message = checker.install_update(dmg_path)
+                
+                if success:
+                    reply = QMessageBox.information(
+                        self,
+                        "Update Ready",
+                        message,
+                        QMessageBox.Ok
+                    )
+                    # Quit the app to allow installation
+                    QApplication.quit()
+                else:
+                    QMessageBox.warning(self, "Installation Error", message)
+            else:
+                QMessageBox.warning(self, "Download Failed", error)
+                
+        except Exception as e:
+            progress.close()
+            if "cancelled" not in str(e).lower():
+                QMessageBox.warning(self, "Update Error", f"Update failed:\\n{str(e)}")
 
 def main():
     app = QApplication(sys.argv)

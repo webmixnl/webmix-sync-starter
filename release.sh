@@ -111,22 +111,111 @@ echo "📦 Package: dist/${DMG_VERSIONED}"
 echo "💾 Size: ${DMG_SIZE}"
 echo "🔐 SHA-256: ${DMG_SHA256}"
 echo ""
+
+# Offer to create GitHub Release
+echo ""
+echo -e "${BLUE}Would you like to create a GitHub Release?${NC}"
+echo "(Requires: git, GitHub CLI 'gh', and repo pushed to GitHub)"
+echo ""
+read -p "Create GitHub Release? [Y/n]: " -n 1 -r
+echo ""
+
+if [[ $REPLY =~ ^[Yy]$  ]] || [[ -z $REPLY ]]; then
+    echo ""
+    echo "🚀 Creating GitHub Release..."
+    
+    # Check if gh CLI is installed
+    if ! command -v gh &> /dev/null; then
+        echo -e "${YELLOW}⚠️  GitHub CLI (gh) is not installed${NC}"
+        echo "Install it with: brew install gh"
+        echo ""
+        echo "Manual steps:"
+        echo "  1. Commit changes: git commit -am 'Release v${NEW_VERSION}'"
+        echo "  2. Create tag: git tag v${NEW_VERSION}"
+        echo "  3. Push: git push && git push --tags"
+        echo "  4. Create release on GitHub and upload: dist/${DMG_VERSIONED}"
+        exit 0
+    fi
+    
+    # Check if logged in to GitHub
+    if ! gh auth status &> /dev/null; then
+        echo -e "${YELLOW}⚠️  Not logged in to GitHub${NC}"
+        echo "Run: gh auth login"
+        exit 1
+    fi
+    
+    # Commit version changes
+    echo "📝 Committing version changes..."
+    git add setup.py
+    git commit -m "Release v${NEW_VERSION}" || true
+    
+    # Create git tag
+    echo "🏷️  Creating git tag v${NEW_VERSION}..."
+    git tag -a "v${NEW_VERSION}" -m "Release version ${NEW_VERSION}"
+    
+    # Push changes and tags
+    echo "⬆️  Pushing to GitHub..."
+    git push origin main || git push origin master
+    git push --tags
+    
+    # Prompt for release notes
+    echo ""
+    echo "Enter release notes (press Ctrl+D when done, or leave empty for default):"
+    RELEASE_NOTES=$(cat)
+    
+    if [[ -z "$RELEASE_NOTES" ]]; then
+        RELEASE_NOTES="Release version ${NEW_VERSION}
+
+📦 Download the DMG below and install
+
+**Installation:**
+1. Download ${DMG_VERSIONED}
+2. Open the DMG
+3. Drag app to Applications folder (replace existing)
+4. Launch the app
+
+**File Info:**
+- Size: ${DMG_SIZE}
+- SHA-256: ${DMG_SHA256}
+
+**Updates:**
+- See CHANGELOG.md for details"
+    fi
+    
+    # Create GitHub release and upload DMG
+    echo "🎉 Creating GitHub release..."
+    gh release create "v${NEW_VERSION}" \
+        "dist/${DMG_VERSIONED}" \
+        --title "Webmix Sync Starter v${NEW_VERSION}" \
+        --notes "$RELEASE_NOTES"
+    
+    if [ $? -eq 0 ]; then
+        echo ""
+        echo -e "${GREEN}✅ GitHub Release created successfully!${NC}"
+        echo ""
+        echo "🌐 View release: https://github.com/$(gh repo view --json nameWithOwner -q .nameWithOwner)/releases/tag/v${NEW_VERSION}"
+        echo ""
+        echo -e "${GREEN}🎉 Your app will now auto-update from GitHub!${NC}"
+        echo "Users with version v${NEW_VERSION} will be notified of future updates."
+    else
+        echo -e "${RED}✗ Failed to create GitHub release${NC}"
+        echo "You can create it manually on GitHub and upload: dist/${DMG_VERSIONED}"
+    fi
+else
+    echo ""
+    echo "Skipping GitHub Release."
+    echo ""
+    echo "Manual steps to publish:"
+    echo "  1. Commit changes: git commit -am 'Release v${NEW_VERSION}'"
+    echo "  2. Create tag: git tag v${NEW_VERSION}"
+    echo "  3. Push: git push && git push --tags"
+    echo "  4. Create release on GitHub: gh release create v${NEW_VERSION} dist/${DMG_VERSIONED}"
+    echo ""
+fi
+
+echo ""
 echo "Next steps:"
-echo "  1. Test the DMG: open 'dist/${DMG_VERSIONED}'"
-echo "  2. Update CHANGELOG.md with changes"
-echo "  3. Commit version changes: git commit -am 'Release v${NEW_VERSION}'"
-echo "  4. Create git tag: git tag v${NEW_VERSION}"
-echo "  5. Copy DMG to shared location or send to colleagues"
+echo "  • Test the app: open 'dist/${DMG_VERSIONED}'"
+echo "  • Update CHANGELOG.md with changes"
+echo "  • Share release URL with your team"
 echo ""
-echo "Distribution message template:"
-echo "----------------------------------------"
-echo "Webmix Sync Starter v${NEW_VERSION} is ready!"
-echo ""
-echo "Download: dist/${DMG_VERSIONED}"
-echo "Size: ${DMG_SIZE}"
-echo ""
-echo "What's new:"
-echo "  - [Add your changes here]"
-echo ""
-echo "Installation: Replace existing app in Applications folder"
-echo "----------------------------------------"

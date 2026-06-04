@@ -80,11 +80,39 @@ if [ -f "dist/${DMG_NAME}.dmg" ]; then
     echo "Installer: dist/${DMG_NAME}.dmg"
     echo "Size: $DMG_SIZE"
     echo ""
-    echo "Distribution instructions:"
-    echo "  1. Share the DMG file with colleagues"
-    echo "  2. They double-click to mount it"
-    echo "  3. They drag the app to Applications folder"
-    echo "  4. Done!"
+    
+    # Check if the app is signed and offer to sign the DMG
+    if codesign --verify --deep --strict "dist/$APP_NAME.app" 2>/dev/null; then
+        echo "🔐 Signing DMG..."
+        codesign --force --sign "Developer ID Application: webmix B.V. (P6P2GY673G)" "dist/${DMG_NAME}.dmg" 2>/dev/null
+        
+        if [ $? -eq 0 ]; then
+            echo -e "${GREEN}✓ DMG signed successfully${NC}"
+            echo ""
+            echo -e "${GREEN}✨ Your DMG is fully signed and notarized!${NC}"
+            echo ""
+            echo "Distribution instructions:"
+            echo "  1. Share dist/${DMG_NAME}.dmg with colleagues"
+            echo "  2. They double-click to mount it"
+            echo "  3. They drag the app to Applications folder"
+            echo "  4. They can launch immediately - NO security warnings!"
+            echo ""
+        else
+            echo -e "${YELLOW}⚠️  DMG signing failed${NC}"
+            echo "DMG will still work, but may show warnings."
+            echo ""
+        fi
+    else
+        echo -e "${YELLOW}⚠️  Note: App is not signed/notarized${NC}"
+        echo ""
+        echo "Users will need to run this command after installation:"
+        echo "  sudo xattr -rd com.apple.quarantine '/Applications/$APP_NAME.app'"
+        echo ""
+        echo "To create a signed version:"
+        echo "  1. Run: ./sign-and-notarize.sh"
+        echo "  2. Then run: ./create-dmg.sh again"
+        echo ""
+    fi
 else
     echo -e "${RED}❌ DMG creation failed${NC}"
     echo ""

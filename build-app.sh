@@ -6,6 +6,13 @@
 
 set -e  # Exit on error
 
+# Clear any Python environment variables that might interfere
+# (from previously installed py2app applications)
+unset PYTHONHOME PYTHONPATH
+
+# Use Python 3.12 (more stable than 3.14)
+PYTHON_CMD="python3.12"
+
 PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$PROJECT_ROOT"
 
@@ -44,7 +51,7 @@ fi
 if [ "$VENV_VALID" = false ]; then
     echo "📦 Creating/recreating virtual environment..."
     rm -rf "$VENV_DIR"
-    python3 -m venv "$VENV_DIR"
+    "$PYTHON_CMD" -m venv "$VENV_DIR"
     echo ""
 fi
 
@@ -98,29 +105,37 @@ if [ -d "dist/Webmix Sync Starter.app" ]; then
     echo -e "${GREEN}✅ Build successful!${NC}"
     echo ""
     
-    # Ad-hoc code signing (doesn't remove Gatekeeper warning but helps)
-    echo "🔐 Ad-hoc signing application..."
-    codesign --force --deep --sign - "dist/Webmix Sync Starter.app" 2>/dev/null
-    if [ $? -eq 0 ]; then
-        echo -e "${GREEN}✓ App signed (ad-hoc)${NC}"
-    else
-        echo -e "${YELLOW}⚠️  Ad-hoc signing failed (not critical)${NC}"
-    fi
-    echo ""
-    
     echo "Application built at:"
     echo "  dist/Webmix Sync Starter.app"
     echo ""
     APP_SIZE=$(du -sh "dist/Webmix Sync Starter.app" | cut -f1)
     echo "Size: $APP_SIZE"
     echo ""
-    echo -e "${YELLOW}⚠️  Note: App is not notarized - users will need to bypass Gatekeeper${NC}"
-    echo "See CODESIGNING.md and INSTALLATION.md for instructions"
+    
+    # Offer to sign and notarize
+    echo -e "${BLUE}Would you like to sign and notarize the app for distribution?${NC}"
+    echo "(Requires Apple Developer ID certificate)"
     echo ""
+    read -p "Sign and notarize now? [y/N]: " -n 1 -r
+    echo ""
+    
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        echo ""
+        ./sign-and-notarize.sh
+    else
+        echo ""
+        echo "Skipping code signing."
+        echo ""
+        echo -e "${YELLOW}⚠️  Note: App is not signed/notarized${NC}"
+        echo "Users will need to bypass Gatekeeper on first launch."
+        echo ""
+        echo "To sign later, run: ./sign-and-notarize.sh"
+        echo ""
+    fi
+    
     echo "Next steps:"
     echo "  • Test: open 'dist/Webmix Sync Starter.app'"
     echo "  • Create DMG: ./create-dmg.sh"
-    echo "  • For production: Sign with Developer ID (see CODESIGNING.md)"
 else
     echo -e "${RED}❌ Build failed${NC}"
     exit 1

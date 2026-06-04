@@ -1,32 +1,36 @@
 # Distribution Checklist
 
-Quick reference for building and distributing Webmix Sync Tool to colleagues.
+Quick reference for building and distributing Webmix Sync Starter to colleagues.
 
-## Build Process
+## Build Process (Signed & Notarized)
 
-### 1. Build the Application
+### 1. Build and Sign the Application
 
 ```bash
 ./build-app.sh
 ```
 
-**Output:** `dist/Webmix Sync Tool.app` (~170MB)
+- When prompted "Sign and notarize now?", press **y**
+- First time: You'll need to enter your app-specific password
+- Subsequent builds: Automatic (credentials stored in keychain)
+- **Output:** `dist/Webmix Sync Starter.app` (~170MB)
+- **Build time:** ~5-10 minutes (including notarization)
 
 ### 2. Test the Application
 
 ```bash
-open "dist/Webmix Sync Tool.app"
+open "dist/Webmix Sync Starter.app"
 ```
 
 Verify:
-- ✅ App launches without errors
+- ✅ App launches without security warnings
 - ✅ Settings can be opened
 - ✅ Sites can be loaded/created
 - ✅ Pull/Push commands work
 - ✅ Watch mode functions
 - ✅ SSH terminal opens
 
-### 3. Create Installer (Optional but Recommended)
+### 3. Create Signed DMG Installer (Recommended)
 
 ```bash
 ./create-dmg.sh
@@ -34,9 +38,11 @@ Verify:
 
 **Output:** `dist/Webmix-Sync-Starter-Installer.dmg` (~100MB compressed)
 
+The DMG will also be code-signed for seamless distribution.
+
 ## Distribution Options
 
-### Option A: DMG Installer (Recommended)
+### ✅ Option A: Signed DMG Installer (RECOMMENDED)
 
 Share: `dist/Webmix-Sync-Starter-Installer.dmg`
 
@@ -47,14 +53,16 @@ Share: `dist/Webmix-Sync-Starter-Installer.dmg`
 4. Install dependencies: `brew install fswatch rsync`
 5. Launch from Applications
 
+**✨ No security warnings! No terminal commands needed!**
+
 ### Option B: ZIP Archive
 
 ```bash
 cd dist
-zip -r "Webmix Sync Tool.zip" "Webmix Sync Tool.app"
+zip -r "Webmix Sync Starter.zip" "Webmix Sync Starter.app"
 ```
 
-Share: `dist/Webmix Sync Tool.zip`
+Share: `dist/Webmix Sync Starter.zip`
 
 **User steps:**
 1. Unzip the file
@@ -62,12 +70,15 @@ Share: `dist/Webmix Sync Tool.zip`
 3. Install dependencies: `brew install fswatch rsync`
 4. Launch from Applications
 
-### Option C: Direct App (Quick Test)
+### Option C: Unsigned Build (Testing Only)
 
-Share: `dist/Webmix Sync Tool.app` (as folder)
+If you skip signing (press 'n' when prompted), users will need to bypass Gatekeeper:
 
-**Note:** macOS may show security warnings when copying folders directly.
-DMG or ZIP is preferred for proper distribution.
+```bash
+sudo xattr -rd com.apple.quarantine "/Applications/Webmix Sync Starter.app"
+```
+
+**Not recommended for distribution** - use signed builds instead!
 
 ## User Requirements
 

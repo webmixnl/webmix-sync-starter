@@ -1,134 +1,129 @@
 # Code Signing for macOS Distribution
 
-## The Problem
+## ✅ Current Setup
 
-When distributing the app to colleagues, macOS Gatekeeper blocks it with:
-> "Apple could not verify 'Webmix Sync Starter.app' is free of malware"
+Your app is now configured for **proper code signing and notarization** with your Apple Developer certificate:
 
-This happens because the app is not signed with an Apple Developer certificate.
+- **Certificate**: Developer ID Application: webmix B.V. (P6P2GY673G)
+- **Team ID**: P6P2GY673G
+- **Apple ID**: bram@webmix.nl
 
-## Solutions
+## Quick Start
 
-### Option 1: For End Users (Bypass Gatekeeper)
+### Build and Sign Your App
 
-**Method A: Command Line (Recommended)**
-```bash
-sudo xattr -rd com.apple.quarantine "/Applications/Webmix Sync Starter.app"
-```
-
-**Method B: GUI**
-1. Right-click the app in Finder
-2. Select "Open" (not double-click)
-3. Click "Open" in the security warning dialog
-4. The app will now open normally in the future
-
-### Option 2: Ad-hoc Code Signing (For Developer)
-
-Sign the app locally after building (doesn't require Apple Developer account):
-
-```bash
-codesign --force --deep --sign - "dist/Webmix Sync Starter.app"
-```
-
-Add this to your build process in `build-app.sh`:
-```bash
-# After building, add this line:
-codesign --force --deep --sign - "dist/Webmix Sync Starter.app"
-```
-
-**Note:** Ad-hoc signing helps but doesn't fully solve Gatekeeper issues. Users may still need to bypass Gatekeeper on first launch.
-
-### Option 3: Apple Developer Certificate (Production)
-
-For professional distribution without security warnings:
-
-1. **Join Apple Developer Program** ($99/year)
-   - https://developer.apple.com/programs/
-
-2. **Get Developer ID Application Certificate**
-   - Open Xcode → Preferences → Accounts
-   - Add your Apple ID
-   - Manage Certificates → "+" → Developer ID Application
-
-3. **Sign the app**
+1. **Build the app**:
    ```bash
-   codesign --force --deep --sign "Developer ID Application: Your Name (TEAM_ID)" \
-     --options runtime \
-     "dist/Webmix Sync Tool.app"
+   ./build-app.sh
+   ```
+   - The build script will ask if you want to sign and notarize
+   - Answer 'y' to proceed with signing
+
+2. **Or sign separately** (if you already built the app):
+   ```bash
+   ./sign-and-notarize.sh
    ```
 
-4. **Notarize the app** (Required for macOS 10.15+)
+3. **Create a signed DMG**:
    ```bash
-   # Create a ZIP
-   ditto -c -k --keepParent "dist/Webmix Sync Starter.app" "Webmix-Sync-Starter.zip"
-   
-   # Submit for notarization
-   xcrun notarytool submit "Webmix-Sync-Starter.zip" \
-     --apple-id "your-email@example.com" \
-     --team-id "TEAM_ID" \
-     --password "app-specific-password" \
-     --wait
-   
-   # Staple the notarization
-   xcrun stapler staple "dist/Webmix Sync Starter.app"
+   ./create-dmg.sh
    ```
 
-5. **Update build-app.sh**
-   Add signing to the build script:
-   ```bash
-   echo "🔐 Signing application..."
-   codesign --force --deep --sign "Developer ID Application: Your Name (TEAM_ID)" \
-     --options runtime \
-     "dist/Webmix Sync Starter.app"
-   
-   if [ $? -eq 0 ]; then
-       echo "✓ App signed successfully"
-   else
-       echo "⚠️  Signing failed - app will require Gatekeeper bypass"
-   fi
-   ```
+### First Time Setup
 
-## Distribution Instructions for Colleagues
+The first time you run `sign-and-notarize.sh`, you'll need an **app-specific password**:
 
-Include these instructions with the DMG:
+1. Go to https://appleid.apple.com/account/manage
+2. Sign in with your Apple ID (bram@webmix.nl)
+3. Under "Security" → "App-Specific Passwords"
+4. Click "Generate Password"
+5. Name it "Webmix Notarization"
+6. Copy the generated password
+7. Paste it when the script prompts you
 
-### Installation Instructions
+The password is stored securely in your macOS keychain and only needs to be entered once.
 
-1. **Download** `Webmix-Sync-Starter-vX.X.X.dmg`
-2. **Open** the DMG file
-3. **Drag** the app to Applications folder
-4. **Important:** Before opening, run this command in Terminal:
+## Distribution
+
+Once your app is signed and notarized, share the DMG:
+
+**✅ What your colleagues get:**
+- Double-click to install
+- Drag to Applications
+- Launch immediately
+- **No security warnings**
+- **No terminal commands needed**
+
+## How It Works
+
+The signing process:
+
+1. **Code Signing**: Signs the app bundle with your Developer ID certificate
+2. **Hardened Runtime**: Enables security protections required by Apple
+3. **Notarization**: Submits the app to Apple for automated malware scanning
+4. **Stapling**: Attaches the notarization ticket to the app (works offline)
+
+This entire process is automated by `sign-and-notarize.sh`.
+
+## Troubleshooting
+
+### "No valid signing identities found"
+
+Your Developer ID certificate may have expired or is not installed.
+
+**Check certificate**:
+```bash
+security find-identity -v -p codesigning
+```
+
+You should see: `Developer ID Application: webmix B.V. (P6P2GY673G)`
+
+**If missing**:
+1. Open Xcode → Settings → Accounts
+2. Add your Apple ID if not present
+3. Select your team → Manage Certificates
+4. Click + → Developer ID Application
+
+### "Invalid credentials"
+
+Your app-specific password may be incorrect or expired.
+
+**Reset credentials**:
+```bash
+xcrun notarytool store-credentials webmix-notarization \
+  --apple-id bram@webmix.nl \
+  --team-id P6P2GY673G
+```
+
+Then enter your app-specific password when prompted.
+
+### "Notarization failed"
+
+Get detailed error logs:
+```bash
+# After a failed notarization, the script will show a submission ID
+xcrun notarytool log <submission-id> --keychain-profile webmix-notarization
+```
+
+Common issues:
+- **Unsigned dependencies**: All embedded frameworks must be signed
+- **Invalid entitlements**: Check hardened runtime requirements
+- **Timeout**: Notarization can take 5-15 minutes during peak times
+
+## Alternative: Manual Distribution (Not Recommended)
+
+If you need to distribute an unsigned app (for quick testing only):
+
+1. Build without signing
+2. Provide this command to users:
    ```bash
    sudo xattr -rd com.apple.quarantine "/Applications/Webmix Sync Starter.app"
    ```
-5. **Open** the app from Applications folder
 
-**Alternative:** Right-click the app → "Open" → Click "Open" in the warning dialog
-
-### First Launch
-The app will ask for your WordPress credentials and create its settings in:
-`~/Library/Application Support/Webmix Sync Starter/`
-
-Your settings will persist across app updates.
-
-## Recommended Approach
-
-**For internal team distribution:**
-- Use Option 1 (Gatekeeper bypass) + clear instructions in README
-- Or use Option 2 (ad-hoc signing) as a courtesy
-
-**For external/client distribution:**
-- Use Option 3 (proper code signing + notarization)
-- Required for professional distribution
-- Provides the best user experience
-
-## Current Status
-
-✅ App builds successfully
-✅ Settings persist across updates
-⚠️  Not code-signed (requires Gatekeeper bypass or Apple Developer account)
+**Note**: This requires sudo access and is not user-friendly. Use proper signing for any real distribution.
 
 ## See Also
 
 - [Apple Developer Documentation - Code Signing](https://developer.apple.com/support/code-signing/)
 - [Apple Developer Documentation - Notarizing macOS Software](https://developer.apple.com/documentation/security/notarizing_macos_software_before_distribution)
+- [Distribution Guide](DISTRIBUTION.md)

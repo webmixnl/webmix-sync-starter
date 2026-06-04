@@ -23,7 +23,7 @@ OPTIONS = {
         'LSMinimumSystemVersion': '10.13',
         'NSHighResolutionCapable': True,
     },
-    'packages': ['PyQt5', 'requests'],
+    'packages': ['PyQt5', 'requests', 'packaging'],
     'includes': ['subprocess', 'pathlib', 'json', 'base64'],
 }
 
