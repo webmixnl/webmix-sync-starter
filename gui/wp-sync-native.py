@@ -2958,13 +2958,7 @@ class WPSyncGUI(QMainWindow):
                 success, message = checker.install_update(dmg_path)
                 
                 if success:
-                    reply = QMessageBox.information(
-                        self,
-                        "Update Ready",
-                        message,
-                        QMessageBox.Ok
-                    )
-                    # Quit the app to allow installation
+                    # Quit immediately after opening DMG (no dialog)
                     QApplication.quit()
                 else:
                     QMessageBox.warning(self, "Installation Error", message)
