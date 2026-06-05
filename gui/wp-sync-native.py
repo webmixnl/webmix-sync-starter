@@ -171,6 +171,55 @@ class FetchSitesThread(QThread):
         except Exception as e:
             self.sites_result.emit(False, None, f"Error: {str(e)}")
 
+class PermissionsThread(QThread):
+    """Thread for running permissions commands via SSH"""
+    output_signal = pyqtSignal(str, str)  # message, level (info/success/error)
+    finished_signal = pyqtSignal(bool, str)  # success, message
+    
+    def __init__(self, ssh_command, operation_name):
+        super().__init__()
+        self.ssh_command = ssh_command
+        self.operation_name = operation_name
+        self.timeout = 600 if operation_name == "close" else 300
+    
+    def run(self):
+        try:
+            result = subprocess.run(
+                self.ssh_command,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout
+            )
+            
+            if result.returncode == 0:
+                self.output_signal.emit(f"✅ Rights {self.operation_name}ed successfully!\n", 'success')
+                if result.stdout:
+                    self.output_signal.emit(result.stdout, 'info')
+                self.finished_signal.emit(True, "Success")
+            else:
+                if self.operation_name == "close":
+                    self.output_signal.emit(f"⚠️ Completed with exit code {result.returncode}\n", 'info')
+                    self.output_signal.emit("Some commands may have failed (normal if paths don't exist)\n", 'info')
+                else:
+                    self.output_signal.emit(f"❌ Error {self.operation_name}ing rights (exit code {result.returncode})\n", 'error')
+                
+                if result.stderr:
+                    self.output_signal.emit(result.stderr, 'error')
+                if result.stdout:
+                    self.output_signal.emit(result.stdout, 'info')
+                
+                self.finished_signal.emit(result.returncode == 0, f"Exit code: {result.returncode}")
+                
+        except subprocess.TimeoutExpired:
+            self.output_signal.emit(f"❌ Operation timed out ({self.timeout // 60} minutes)\n", 'error')
+            self.finished_signal.emit(False, "Timeout")
+        except FileNotFoundError:
+            self.output_signal.emit("❌ SSH command not found. Please ensure SSH is installed.\n", 'error')
+            self.finished_signal.emit(False, "SSH not found")
+        except Exception as e:
+            self.output_signal.emit(f"❌ Error: {str(e)}\n", 'error')
+            self.finished_signal.emit(False, str(e))
+
 class SSHTerminalDialog(QDialog):
     """Embedded SSH terminal dialog"""
     
@@ -1605,6 +1654,7 @@ class WPSyncGUI(QMainWindow):
         self._stopping_watch = False
         self.startup_auth_thread = None
         self.fetch_sites_thread = None
+        self.permissions_thread = None
         self.api_sites_data = []  # Store API sites data
         
         self.init_ui()
@@ -1961,6 +2011,26 @@ class WPSyncGUI(QMainWindow):
         site_secondary_row.addWidget(self.open_in_editor_btn)
         
         site_actions_layout.addLayout(site_secondary_row)
+        
+        # Permissions management row
+        permissions_row = QHBoxLayout()
+        permissions_row.setSpacing(6)
+        
+        self.open_rights_btn = QPushButton("🔓 Open Rights")
+        self.open_rights_btn.setMinimumHeight(30)
+        self.open_rights_btn.setEnabled(True)
+        self.open_rights_btn.setToolTip("Open file permissions on server (chmod 755/644)")
+        self.open_rights_btn.clicked.connect(self.open_rights)
+        permissions_row.addWidget(self.open_rights_btn)
+        
+        self.close_rights_btn = QPushButton("🔒 Close Rights")
+        self.close_rights_btn.setMinimumHeight(30)
+        self.close_rights_btn.setEnabled(True)
+        self.close_rights_btn.setToolTip("Restrict file permissions on server (secure WordPress)")
+        self.close_rights_btn.clicked.connect(self.close_rights)
+        permissions_row.addWidget(self.close_rights_btn)
+        
+        site_actions_layout.addLayout(permissions_row)
         
         site_actions_group.setLayout(site_actions_layout)
         main_layout.addWidget(site_actions_group)
@@ -2558,10 +2628,13 @@ class WPSyncGUI(QMainWindow):
         self.push_btn.setEnabled(enabled)
         self.watch_btn.setEnabled(enabled)
         self.test_connection_btn.setEnabled(enabled)
+        self.ssh_btn.setEnabled(enabled)
+        self.open_in_editor_btn.setEnabled(enabled)
+        self.open_rights_btn.setEnabled(enabled)
+        self.close_rights_btn.setEnabled(enabled)
         # Maintenance button only enabled when site is selected
         self.maintenance_btn.setEnabled(False)  # Keep disabled for now
-        # SSH and Dev Env buttons stay disabled
-        self.ssh_btn.setEnabled(True)
+        # Dev Env buttons stay disabled
         self.dev_env_btn.setEnabled(False)
     
     def run_pull(self):
@@ -2985,6 +3058,230 @@ class WPSyncGUI(QMainWindow):
             )
             self.log_output(f"\n✗ Error opening in editor: {e}\n", "error")
     
+    def open_rights(self):
+        """Open file permissions on the remote server"""
+        if self.current_thread and self.current_thread.isRunning():
+            QMessageBox.warning(self, "Busy", "Another operation is in progress. Please wait.")
+            return
+        
+        site = self.site_combo.currentText()
+        if not site:
+            return
+        
+        # Load site config
+        config_file = self.sites_dir / f"{site}.env"
+        if not config_file.exists():
+            QMessageBox.critical(self, "Error", f"Configuration file not found for {site}")
+            return
+        
+        config = {}
+        with open(config_file, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, value = line.split('=', 1)
+                    config[key] = value.strip('"').strip("'")
+        
+        # Build SSH command
+        ssh_host = config.get('SSH_HOST')
+        ssh_port = config.get('SSH_PORT', '22')
+        ssh_user = config.get('SSH_USER')
+        ssh_key_path = self.settings_manager.get('ssh_key_path', '~/.ssh/id_rsa')
+        ssh_key_expanded = Path(ssh_key_path).expanduser()
+        
+        if not all([ssh_host, ssh_user]):
+            QMessageBox.critical(self, "Error", "SSH configuration incomplete")
+            return
+        
+        # Open rights commands
+        commands = [
+            'find . -name public_html -type d -exec chmod 775 {} \\;',
+            'find ./public_html/ -type f -exec chmod 644 {} \\;',
+            'find ./public_html/ -type d -exec chmod 755 {} \\;'
+        ]
+        
+        # Combine commands
+        remote_command = ' && '.join(commands)
+        
+        self.log_output(f"\n=== Opening Rights on {site} ===", 'info')
+        self.log_output(f"Connecting to {ssh_user}@{ssh_host}...\n")
+        
+        ssh_command = [
+            'ssh',
+            '-i', str(ssh_key_expanded),
+            '-p', str(ssh_port),
+            '-o', 'StrictHostKeyChecking=no',
+            '-o', 'ConnectTimeout=10',
+            f'{ssh_user}@{ssh_host}',
+            remote_command
+        ]
+        
+        try:
+            result = subprocess.run(
+                ssh_command,
+                capture_output=True,
+                text=True,
+                timeout=300  # 5 minutes timeout
+            )
+            
+            if result.returncode == 0:
+                self.log_output("✅ Rights opened successfully!\n", 'success')
+                if result.stdout:
+                    self.log_output(result.stdout)
+            else:
+                self.log_output(f"❌ Error opening rights (exit code {result.returncode})\n", 'error')
+                if result.stderr:
+                    self.log_output(result.stderr, 'error')
+                if result.stdout:
+                    self.log_output(result.stdout)
+                    
+        except subprocess.TimeoutExpired:
+            self.log_output("❌ Operation timed out (5 minutes)\n", 'error')
+        except FileNotFoundError:
+            self.log_output("❌ SSH command not found. Please ensure SSH is installed.\n", 'error')
+        except Exception as e:
+            self.log_output(f"❌ Error: {str(e)}\n", 'error')
+    
+    def close_rights(self):
+        """Close/restrict file permissions on the remote server"""
+        if self.current_thread and self.current_thread.isRunning():
+            QMessageBox.warning(self, "Busy", "Another operation is in progress. Please wait.")
+            return
+        
+        site = self.site_combo.currentText()
+        if not site:
+            return
+        
+        # Confirm action as this is restrictive
+        reply = QMessageBox.question(
+            self,
+            "Confirm Close Rights",
+            f"Are you sure you want to restrict file permissions on {site}?\n\n"
+            "This will set restrictive permissions for security.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply != QMessageBox.Yes:
+            return
+        
+        # Load site config
+        config_file = self.sites_dir / f"{site}.env"
+        if not config_file.exists():
+            QMessageBox.critical(self, "Error", f"Configuration file not found for {site}")
+            return
+        
+        config = {}
+        with open(config_file, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, value = line.split('=', 1)
+                    config[key] = value.strip('"').strip("'")
+        
+        # Build SSH command
+        ssh_host = config.get('SSH_HOST')
+        ssh_port = config.get('SSH_PORT', '22')
+        ssh_user = config.get('SSH_USER')
+        ssh_key_path = self.settings_manager.get('ssh_key_path', '~/.ssh/id_rsa')
+        ssh_key_expanded = Path(ssh_key_path).expanduser()
+        
+        if not all([ssh_host, ssh_user]):
+            QMessageBox.critical(self, "Error", "SSH configuration incomplete")
+            return
+        
+        # Close rights commands
+        commands = [
+            'find ./public_html/ -type f -exec chmod 444 {} \\;',
+            'find ./public_html/ -type d -exec chmod 555 {} \\;',
+            'find ./public_html/.htaccess -type f -exec chmod 444 {} \\;',
+            'find ./public_html/wp-config.php -type f -exec chmod 400 {} \\;',
+            'find ./public_html/wp-content/uploads/ -name .htaccess -type f -exec chmod 444 {} \\;',
+            'find ./public_html/wp-content/uploads/ -name "sucuri" -type d -exec chmod 755 {} \\;',
+            'find ./public_html/wp-content/uploads/sucuri/ -type f -exec chmod 655 {} \\;',
+            'find ./public_html/wp-content/uploads/woo-product-feed-pro/xml/ -type f -exec chmod 755 {} \\;',
+            'find ./public_html/wp-content/uploads/ -type d -exec chmod 755 {} \\;',
+            'find ./public_html/wp-content/uploads/woocommerce_uploads -R -type d -exec chmod 755 {} \\;',
+            'find ./public_html/assets/ -type d -exec chmod 755 {} \\;',
+            'find ./public_html/backend-jaarverslag-2019/wp-content/uploads/ -type d -exec chmod 755 {} \\;',
+            'find ./public_html/backend-jaarverslag-2020/wp-content/uploads/ -type d -exec chmod 755 {} \\;',
+            'find ./public_html/backend-jaarverslag-2021/wp-content/uploads/ -type d -exec chmod 755 {} \\;',
+            'find ./public_html/wp-content/infinitewp/backups -type d -exec chmod 755 {} \\;',
+            'find ./public_html/wp-content/infinitewp/temp -type d -exec chmod 755 {} \\;',
+            'find ./public_html/wp-content/ewww/ -type d -exec chmod 755 {} \\;',
+            'find ./public_html/wp-content/ewww/ -type f -exec chmod 644 {} \\;',
+            'find ./public_html/wp-content/litespeed/ -type d -exec chmod 755 {} \\;',
+            'find ./public_html/wp-content/litespeed/ -type f -exec chmod 644 {} \\;',
+            'find ./public_html/wp-content/wp-rocket-config -type d -exec chmod 755 {} \\;',
+            'find ./public_html/wp-content/cache/wp-rocket -type d -exec chmod 755 {} \\;',
+            'find ./public_html/wp-content/cache/min -type d -exec chmod 755 {} \\;',
+            'find ./public_html/wp-content/cache/busting -type d -exec chmod 755 {} \\;',
+            'find ./public_html/wp-content/languages -type d -exec chmod 755 {} \\;',
+            'find ./public_html/wp-content/updraft -type d -exec chmod 755 {} \\;',
+            'find ./public_html/wp-content/plugins/litespeed-cache/ -type d -exec chmod 755 {} \\;',
+            'find ./public_html/wp-content/plugins/litespeed-cache/ -type f -exec chmod 644 {} \\;',
+            'find ./public_html/wp-content/themes/bridge/js -type d -exec chmod 755 {} \\;',
+            'find ./public_html/wp-content/themes/bridge/css -type d -exec chmod 755 {} \\;',
+            'find . -name public_html -type d -exec chmod 755 {} \\;',
+            'find ./public_html/ -name "wp-content" -type d -exec chmod 755 {} \\;',
+            'find ./public_html/.well-known/ -type d -exec chmod 755 {} \\;',
+            'find ./public_html/media/ -type d -exec chmod 755 {} \\;',
+            'find ./public_html/assets/ -type d -exec chmod 755 {} \\;',
+            'find ./public_html/cachedTiles/ -type d -exec chmod 755 {} \\;',
+            'find ./public_html/cachedTiles/ -type f -exec chmod 644 {} \\;',
+            'find ./public_html/ -name "pdftmp" -type d -exec chmod 755 {} \\;',
+            'find ./public_html/pdfs -type d -exec chmod 755 {} \\;',
+            'find ./public_html/wp-content/uploads/2020/08/data/ -type f -exec chmod 644 {} \\;',
+            'find ./public_html/wp-content/uploads/sherpa-stock-sync.log -exec chmod 644 {} \\;',
+            'find ./public_html/wp-content/uploads/temp/ips/ -type d -exec chmod 755 {} \\;',
+            'find ./public_html/wp-content/uploads/temp/ips/ -type f -exec chmod 644 {} \\;',
+            'find ./public_html/wp-content/plugins/order-signature-for-woocommerce-pro/assets/swph_sign_images/ -type d -exec chmod 755 {} \\;'
+        ]
+        
+        # Combine commands with && and handle errors gracefully (2>/dev/null)
+        remote_command = ' && '.join([f"{cmd} 2>/dev/null || true" for cmd in commands])
+        
+        self.log_output(f"\n=== Closing Rights on {site} ===", 'info')
+        self.log_output(f"Connecting to {ssh_user}@{ssh_host}...\n")
+        self.log_output("This may take a few minutes...\n")
+        
+        ssh_command = [
+            'ssh',
+            '-i', str(ssh_key_expanded),
+            '-p', str(ssh_port),
+            '-o', 'StrictHostKeyChecking=no',
+            '-o', 'ConnectTimeout=10',
+            f'{ssh_user}@{ssh_host}',
+            remote_command
+        ]
+        
+        try:
+            result = subprocess.run(
+                ssh_command,
+                capture_output=True,
+                text=True,
+                timeout=600  # 10 minutes timeout (longer for many commands)
+            )
+            
+            if result.returncode == 0:
+                self.log_output("✅ Rights closed successfully!\n", 'success')
+                if result.stdout:
+                    self.log_output(result.stdout)
+            else:
+                self.log_output(f"⚠️ Completed with exit code {result.returncode}\n", 'info')
+                self.log_output("Some commands may have failed (normal if paths don't exist)\n")
+                if result.stderr:
+                    self.log_output(result.stderr, 'error')
+                if result.stdout:
+                    self.log_output(result.stdout)
+                    
+        except subprocess.TimeoutExpired:
+            self.log_output("❌ Operation timed out (10 minutes)\n", 'error')
+        except FileNotFoundError:
+            self.log_output("❌ SSH command not found. Please ensure SSH is installed.\n", 'error')
+        except Exception as e:
+            self.log_output(f"❌ Error: {str(e)}\n", 'error')
+    
     def test_connection(self):
         """Test SSH connection to the selected site"""
         site_key = self.site_combo.currentData()
@@ -3091,6 +3388,221 @@ class WPSyncGUI(QMainWindow):
                 self, "Error",
                 f"Failed to test connection:\n{e}"
             )
+    
+    def open_rights(self):
+        """Open file permissions on the remote server"""
+        if self.permissions_thread and self.permissions_thread.isRunning():
+            QMessageBox.warning(self, "Busy", "A permissions operation is already in progress. Please wait.")
+            return
+        
+        if self.current_thread and self.current_thread.isRunning():
+            QMessageBox.warning(self, "Busy", "Another operation is in progress. Please wait.")
+            return
+        
+        site = self.site_combo.currentText()
+        if not site:
+            return
+        
+        # Load site config
+        config_file = self.sites_dir / f"{site}.env"
+        if not config_file.exists():
+            QMessageBox.critical(self, "Error", f"Configuration file not found for {site}")
+            return
+        
+        config = {}
+        with open(config_file, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, value = line.split('=', 1)
+                    config[key] = value.strip('"').strip("'")
+        
+        # Build SSH command
+        ssh_host = config.get('SSH_HOST')
+        ssh_port = config.get('SSH_PORT', '22')
+        ssh_user = config.get('SSH_USER')
+        ssh_key_path = self.settings_manager.get('ssh_key_path', '~/.ssh/id_rsa')
+        ssh_key_expanded = Path(ssh_key_path).expanduser()
+        
+        if not all([ssh_host, ssh_user]):
+            QMessageBox.critical(self, "Error", "SSH configuration incomplete")
+            return
+        
+        # Open rights commands
+        commands = [
+            'find . -name public_html -type d -exec chmod 775 {} \\;',
+            'find ./public_html/ -type f -exec chmod 644 {} \\;',
+            'find ./public_html/ -type d -exec chmod 755 {} \\;'
+        ]
+        
+        # Combine commands
+        remote_command = ' && '.join(commands)
+        
+        self.log_output(f"\n=== Opening Rights on {site} ===", 'info')
+        self.log_output(f"\nConnecting to {ssh_user}@{ssh_host}...\n")
+        
+        ssh_command = [
+            'ssh',
+            '-i', str(ssh_key_expanded),
+            '-p', str(ssh_port),
+            '-o', 'StrictHostKeyChecking=no',
+            '-o', 'ConnectTimeout=10',
+            f'{ssh_user}@{ssh_host}',
+            remote_command
+        ]
+        
+        # Disable button during operation
+        self.open_rights_btn.setEnabled(False)
+        self.open_rights_btn.setText("Opening...")
+        self.update_button_states(False)
+        
+        # Run in background thread
+        self.permissions_thread = PermissionsThread(ssh_command, "open")
+        self.permissions_thread.output_signal.connect(self.log_output)
+        self.permissions_thread.finished_signal.connect(self.on_open_rights_finished)
+        self.permissions_thread.start()
+    
+    def on_open_rights_finished(self, success, message):
+        """Handle completion of open rights operation"""
+        self.open_rights_btn.setEnabled(True)
+        self.open_rights_btn.setText("🔓 Open Rights")
+        self.update_button_states(True)
+        self.permissions_thread = None
+    
+    def close_rights(self):
+        """Close/restrict file permissions on the remote server"""
+        if self.permissions_thread and self.permissions_thread.isRunning():
+            QMessageBox.warning(self, "Busy", "A permissions operation is already in progress. Please wait.")
+            return
+        
+        if self.current_thread and self.current_thread.isRunning():
+            QMessageBox.warning(self, "Busy", "Another operation is in progress. Please wait.")
+            return
+        
+        site = self.site_combo.currentText()
+        if not site:
+            return
+        
+        # Confirm action as this is restrictive
+        reply = QMessageBox.question(
+            self,
+            "Confirm Close Rights",
+            f"Are you sure you want to restrict file permissions on {site}?\n\n"
+            "This will set restrictive permissions for security.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply != QMessageBox.Yes:
+            return
+        
+        # Load site config
+        config_file = self.sites_dir / f"{site}.env"
+        if not config_file.exists():
+            QMessageBox.critical(self, "Error", f"Configuration file not found for {site}")
+            return
+        
+        config = {}
+        with open(config_file, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, value = line.split('=', 1)
+                    config[key] = value.strip('"').strip("'")
+        
+        # Build SSH command
+        ssh_host = config.get('SSH_HOST')
+        ssh_port = config.get('SSH_PORT', '22')
+        ssh_user = config.get('SSH_USER')
+        ssh_key_path = self.settings_manager.get('ssh_key_path', '~/.ssh/id_rsa')
+        ssh_key_expanded = Path(ssh_key_path).expanduser()
+        
+        if not all([ssh_host, ssh_user]):
+            QMessageBox.critical(self, "Error", "SSH configuration incomplete")
+            return
+        
+        # Close rights commands
+        commands = [
+            'find ./public_html/ -type f -exec chmod 444 {} \\;',
+            'find ./public_html/ -type d -exec chmod 555 {} \\;',
+            'find ./public_html/.htaccess -type f -exec chmod 444 {} \\;',
+            'find ./public_html/wp-config.php -type f -exec chmod 400 {} \\;',
+            'find ./public_html/wp-content/uploads/ -name .htaccess -type f -exec chmod 444 {} \\;',
+            'find ./public_html/wp-content/uploads/ -name "sucuri" -type d -exec chmod 755 {} \\;',
+            'find ./public_html/wp-content/uploads/sucuri/ -type f -exec chmod 655 {} \\;',
+            'find ./public_html/wp-content/uploads/woo-product-feed-pro/xml/ -type f -exec chmod 755 {} \\;',
+            'find ./public_html/wp-content/uploads/ -type d -exec chmod 755 {} \\;',
+            'find ./public_html/wp-content/uploads/woocommerce_uploads -R -type d -exec chmod 755 {} \\;',
+            'find ./public_html/assets/ -type d -exec chmod 755 {} \\;',
+            'find ./public_html/backend-jaarverslag-2019/wp-content/uploads/ -type d -exec chmod 755 {} \\;',
+            'find ./public_html/backend-jaarverslag-2020/wp-content/uploads/ -type d -exec chmod 755 {} \\;',
+            'find ./public_html/backend-jaarverslag-2021/wp-content/uploads/ -type d -exec chmod 755 {} \\;',
+            'find ./public_html/wp-content/infinitewp/backups -type d -exec chmod 755 {} \\;',
+            'find ./public_html/wp-content/infinitewp/temp -type d -exec chmod 755 {} \\;',
+            'find ./public_html/wp-content/ewww/ -type d -exec chmod 755 {} \\;',
+            'find ./public_html/wp-content/ewww/ -type f -exec chmod 644 {} \\;',
+            'find ./public_html/wp-content/litespeed/ -type d -exec chmod 755 {} \\;',
+            'find ./public_html/wp-content/litespeed/ -type f -exec chmod 644 {} \\;',
+            'find ./public_html/wp-content/wp-rocket-config -type d -exec chmod 755 {} \\;',
+            'find ./public_html/wp-content/cache/wp-rocket -type d -exec chmod 755 {} \\;',
+            'find ./public_html/wp-content/cache/min -type d -exec chmod 755 {} \\;',
+            'find ./public_html/wp-content/cache/busting -type d -exec chmod 755 {} \\;',
+            'find ./public_html/wp-content/languages -type d -exec chmod 755 {} \\;',
+            'find ./public_html/wp-content/updraft -type d -exec chmod 755 {} \\;',
+            'find ./public_html/wp-content/plugins/litespeed-cache/ -type d -exec chmod 755 {} \\;',
+            'find ./public_html/wp-content/plugins/litespeed-cache/ -type f -exec chmod 644 {} \\;',
+            'find ./public_html/wp-content/themes/bridge/js -type d -exec chmod 755 {} \\;',
+            'find ./public_html/wp-content/themes/bridge/css -type d -exec chmod 755 {} \\;',
+            'find . -name public_html -type d -exec chmod 755 {} \\;',
+            'find ./public_html/ -name "wp-content" -type d -exec chmod 755 {} \\;',
+            'find ./public_html/.well-known/ -type d -exec chmod 755 {} \\;',
+            'find ./public_html/media/ -type d -exec chmod 755 {} \\;',
+            'find ./public_html/assets/ -type d -exec chmod 755 {} \\;',
+            'find ./public_html/cachedTiles/ -type d -exec chmod 755 {} \\;',
+            'find ./public_html/cachedTiles/ -type f -exec chmod 644 {} \\;',
+            'find ./public_html/ -name "pdftmp" -type d -exec chmod 755 {} \\;',
+            'find ./public_html/pdfs -type d -exec chmod 755 {} \\;',
+            'find ./public_html/wp-content/uploads/2020/08/data/ -type f -exec chmod 644 {} \\;',
+            'find ./public_html/wp-content/uploads/sherpa-stock-sync.log -exec chmod 644 {} \\;',
+            'find ./public_html/wp-content/uploads/temp/ips/ -type d -exec chmod 755 {} \\;',
+            'find ./public_html/wp-content/uploads/temp/ips/ -type f -exec chmod 644 {} \\;',
+            'find ./public_html/wp-content/plugins/order-signature-for-woocommerce-pro/assets/swph_sign_images/ -type d -exec chmod 755 {} \\;'
+        ]
+        
+        # Combine commands with && and handle errors gracefully (2>/dev/null)
+        remote_command = ' && '.join([f"{cmd} 2>/dev/null || true" for cmd in commands])
+        
+        self.log_output(f"\n=== Closing Rights on {site} ===", 'info')
+        self.log_output(f"\nConnecting to {ssh_user}@{ssh_host}...\n")
+        self.log_output("This may take a few minutes...\n")
+        
+        ssh_command = [
+            'ssh',
+            '-i', str(ssh_key_expanded),
+            '-p', str(ssh_port),
+            '-o', 'StrictHostKeyChecking=no',
+            '-o', 'ConnectTimeout=10',
+            f'{ssh_user}@{ssh_host}',
+            remote_command
+        ]
+        
+        # Disable button during operation
+        self.close_rights_btn.setEnabled(False)
+        self.close_rights_btn.setText("Closing...")
+        self.update_button_states(False)
+        
+        # Run in background thread
+        self.permissions_thread = PermissionsThread(ssh_command, "close")
+        self.permissions_thread.output_signal.connect(self.log_output)
+        self.permissions_thread.finished_signal.connect(self.on_close_rights_finished)
+        self.permissions_thread.start()
+    
+    def on_close_rights_finished(self, success, message):
+        """Handle completion of close rights operation"""
+        self.close_rights_btn.setEnabled(True)
+        self.close_rights_btn.setText("🔒 Close Rights")
+        self.update_button_states(True)
+        self.permissions_thread = None
     
     def execute_command(self, args, action_name):
         """Execute a command in a thread"""
