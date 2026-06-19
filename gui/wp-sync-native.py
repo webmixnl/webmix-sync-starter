@@ -15,6 +15,10 @@ import threading
 import json
 import base64
 from pathlib import Path
+import os
+import time
+import shutil
+from datetime import datetime, timedelta
 import requests
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -1902,7 +1906,20 @@ class WPSyncGUI(QMainWindow):
         site_layout = QVBoxLayout()
         site_layout.setSpacing(8)
         
-        # Site selector
+        # Currently selected site display (prominent)
+        self.selected_site_label = QLabel("<b>Selected:</b> None")
+        self.selected_site_label.setStyleSheet("""
+            color: #1f2937;
+            padding: 8px 12px;
+            background-color: #dbeafe;
+            border-radius: 6px;
+            border: 2px solid #3b82f6;
+            font-size: 13px;
+            font-weight: bold;
+        """)
+        site_layout.addWidget(self.selected_site_label)
+        
+        # Site selector dropdown
         site_select_layout = QHBoxLayout()
         site_select_layout.setSpacing(6)
         site_label = QLabel("Site:")
@@ -2047,10 +2064,17 @@ class WPSyncGUI(QMainWindow):
         self.dev_env_btn.clicked.connect(self.setup_dev_environment)
         self.dev_env_btn.hide()  # Hidden for now
         general_layout.addWidget(self.dev_env_btn)
+        
+        self.clean_local_btn = QPushButton("🗑️ Clean Local Files")
+        self.clean_local_btn.setObjectName("secondaryBtn")
+        self.clean_local_btn.setMinimumHeight(30)
+        self.clean_local_btn.setToolTip("Delete local files (keeps server files safe)")
+        self.clean_local_btn.clicked.connect(self.clean_local_files)
+        general_layout.addWidget(self.clean_local_btn)
+        
         general_layout.addStretch()
         
         general_group.setLayout(general_layout)
-        general_group.hide()  # Hide entire group since it's empty now
         main_layout.addWidget(general_group)
         
         # Output Group
@@ -2105,13 +2129,22 @@ class WPSyncGUI(QMainWindow):
             site_files = list(self.sites_dir.glob("*.env"))
             configured_sites = {f.stem for f in site_files if f.stem != "example-site"}
         
+        # Sort sites alphabetically
+        sorted_sites = sorted(list(configured_sites))
+        
         if not configured_sites:
+            self.selected_site_label.setText("<b>Selected:</b> None")
+            self.selected_site_label.setStyleSheet("""
+                color: #6b7280;
+                padding: 8px 12px;
+                background-color: #f9fafb;
+                border-radius: 6px;
+                border: 1px solid #e5e7eb;
+                font-size: 13px;
+            """)
             self.log_output("No configured sites.\n", "warning")
             self.log_output("Click 'Sync from API' to load available sites, then '+ New Site' to configure one.\n", "info")
             return
-        
-        # Sort sites alphabetically
-        sorted_sites = sorted(list(configured_sites))
         
         # Add only configured sites
         for site in sorted_sites:
@@ -2495,6 +2528,15 @@ class WPSyncGUI(QMainWindow):
         """Handle site selection"""
         site_key = self.site_combo.currentData()
         if not site_key:
+            self.selected_site_label.setText("<b>Selected:</b> None")
+            self.selected_site_label.setStyleSheet("""
+                color: #6b7280;
+                padding: 8px 12px;
+                background-color: #f9fafb;
+                border-radius: 6px;
+                border: 1px solid #e5e7eb;
+                font-size: 13px;
+            """)
             return
         
         site_file = self.sites_dir / f"{site_key}.env"
@@ -2519,15 +2561,57 @@ class WPSyncGUI(QMainWindow):
             host = config.get('SSH_HOST', 'N/A')
             user = config.get('SSH_USER', 'N/A')
             port = config.get('SSH_PORT', 'N/A')
-            self.site_info_label.setText(f"📡 {user}@{host}:{port}")
-            self.site_info_label.setStyleSheet("""
-                color: #374151;
-                padding: 6px 8px;
-                background-color: #f3f4f6;
-                border-radius: 4px;
-                border: 1px solid #d1d5db;
-                font-size: 11px;
+            local_root = config.get('LOCAL_ROOT', '')
+            
+            # Update prominent selected site label
+            self.selected_site_label.setText(f"<b>🎯 Selected:</b> {site_key}")
+            self.selected_site_label.setStyleSheet("""
+                color: #1f2937;
+                padding: 8px 12px;
+                background-color: #dbeafe;
+                border-radius: 6px;
+                border: 2px solid #3b82f6;
+                font-size: 13px;
+                font-weight: bold;
             """)
+            
+            # Check local file age
+            age_warning = ""
+            days_old = None
+            if local_root:
+                local_path = Path(local_root).expanduser()
+                if local_path.exists():
+                    days_old = self.get_local_files_age(local_path)
+                    if days_old is not None:
+                        if days_old > 7:
+                            age_warning = f" | <span style='color: #dc2626; font-weight: bold;'>⚠️ {days_old} days old - Clean or Pull!</span>"
+                        elif days_old > 3:
+                            age_warning = f" | <span style='color: #f59e0b;'>⏱️ {days_old} days old</span>"
+                        else:
+                            age_warning = f" | <span style='color: #059669;'>✓ {days_old} days old</span>"
+            
+            info_text = f"📡 {user}@{host}:{port}{age_warning}"
+            self.site_info_label.setText(info_text)
+            
+            # Change background color if files are old
+            if days_old is not None and days_old > 7:
+                self.site_info_label.setStyleSheet("""
+                    color: #374151;
+                    padding: 6px 8px;
+                    background-color: #fee2e2;
+                    border-radius: 4px;
+                    border: 1px solid #fca5a5;
+                    font-size: 11px;
+                """)
+            else:
+                self.site_info_label.setStyleSheet("""
+                    color: #374151;
+                    padding: 6px 8px;
+                    background-color: #f3f4f6;
+                    border-radius: 4px;
+                    border: 1px solid #d1d5db;
+                    font-size: 11px;
+                """)
         else:
             self.site_info_label.setText("⚠️ Site needs configuration - click 'Edit Site'")
             self.site_info_label.setStyleSheet("""
@@ -2655,6 +2739,72 @@ class WPSyncGUI(QMainWindow):
         if not site_key:
             QMessageBox.warning(self, "No Site", "Please select a site first.")
             return
+        
+        # SAFETY CHECK: Prevent push when local files don't exist
+        site_file = self.sites_dir / f"{site_key}.env"
+        if site_file.exists():
+            config = {}
+            with open(site_file, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#') and '=' in line:
+                        key, value = line.split('=', 1)
+                        key = key.strip()
+                        value = value.strip()
+                        
+                        # Handle bash $'...' syntax
+                        if value.startswith("$'") and value.endswith("'"):
+                            value = value[2:-1].replace('\\n', '\n')
+                        else:
+                            value = value.strip('"')
+                        
+                        config[key] = value
+            
+            local_root = config.get('LOCAL_ROOT', '')
+            if local_root:
+                local_path = Path(local_root).expanduser()
+                
+                # Check if local directory exists
+                if not local_path.exists():
+                    QMessageBox.critical(
+                        self, "⚠️ Cannot Push - No Local Files",
+                        f"<b>Push aborted for safety!</b>\n\n"
+                        f"Local directory does not exist:\n{local_path}\n\n"
+                        f"<span style='color: #dc2626;'>⚠️ Pushing would delete all files on the server!</span>\n\n"
+                        f"<b>What to do:</b>\n"
+                        f"1. Use 'Pull' to download files from server first\n"
+                        f"2. Make your changes locally\n"
+                        f"3. Then use 'Push' to upload"
+                    )
+                    self.log_output("❌ Push aborted: Local directory does not exist\n", "error")
+                    return
+                
+                # Check if local directory has any files (not empty)
+                has_files = False
+                try:
+                    for root, dirs, files in os.walk(local_path):
+                        # Skip hidden directories
+                        dirs[:] = [d for d in dirs if not d.startswith('.')]
+                        # Check for non-hidden files
+                        if any(f for f in files if not f.startswith('.')):
+                            has_files = True
+                            break
+                except Exception as e:
+                    self.log_output(f"Warning: Could not check local files: {str(e)}\n", "error")
+                
+                if not has_files:
+                    QMessageBox.critical(
+                        self, "⚠️ Cannot Push - Local Directory Empty",
+                        f"<b>Push aborted for safety!</b>\n\n"
+                        f"Local directory is empty:\n{local_path}\n\n"
+                        f"<span style='color: #dc2626;'>⚠️ Pushing would delete all files on the server!</span>\n\n"
+                        f"<b>What to do:</b>\n"
+                        f"1. Use 'Pull' to download files from server first\n"
+                        f"2. Make your changes locally\n"
+                        f"3. Then use 'Push' to upload"
+                    )
+                    self.log_output("❌ Push aborted: Local directory is empty\n", "error")
+                    return
         
         reply = QMessageBox.question(
             self, "Confirm Push",
@@ -3797,6 +3947,157 @@ class WPSyncGUI(QMainWindow):
                     "Update Check Failed",
                     f"Could not check for updates:\\n{str(e)}"
                 )
+    
+    def get_local_files_age(self, local_path):
+        """Get the age in days of the most recently modified file in local directory"""
+        try:
+            if not local_path.exists():
+                return None
+            
+            latest_mtime = 0
+            
+            # Walk through all files in the directory
+            for root, dirs, files in os.walk(local_path):
+                # Skip hidden directories like .git, .DS_Store, etc.
+                dirs[:] = [d for d in dirs if not d.startswith('.')]
+                
+                for file in files:
+                    # Skip hidden files
+                    if file.startswith('.'):
+                        continue
+                    
+                    file_path = os.path.join(root, file)
+                    try:
+                        mtime = os.path.getmtime(file_path)
+                        latest_mtime = max(latest_mtime, mtime)
+                    except (OSError, PermissionError):
+                        continue
+            
+            if latest_mtime == 0:
+                return None
+            
+            # Calculate days difference
+            now = time.time()
+            age_seconds = now - latest_mtime
+            age_days = int(age_seconds / 86400)  # Convert to days
+            
+            return age_days
+            
+        except Exception as e:
+            self.log_output(f"Error checking file age: {str(e)}\n", "error")
+            return None
+    
+    def clean_local_files(self):
+        """Delete local files for the selected site (DOES NOT affect server)"""
+        site_key = self.site_combo.currentData()
+        
+        if not site_key:
+            QMessageBox.warning(
+                self, "No Site Selected",
+                "Please select a site first."
+            )
+            return
+        
+        # Load site config to get local path
+        site_file = self.sites_dir / f"{site_key}.env"
+        
+        if not site_file.exists():
+            QMessageBox.critical(
+                self, "Error",
+                f"Configuration file not found for {site_key}"
+            )
+            return
+        
+        config = {}
+        with open(site_file, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, value = line.split('=', 1)
+                    key = key.strip()
+                    value = value.strip()
+                    
+                    # Handle bash $'...' syntax
+                    if value.startswith("$'") and value.endswith("'"):
+                        value = value[2:-1].replace('\\n', '\n')
+                    else:
+                        value = value.strip('"')
+                    
+                    config[key] = value
+        
+        local_root = config.get('LOCAL_ROOT', '')
+        if not local_root:
+            QMessageBox.critical(
+                self, "Error",
+                "Local root path not configured for this site."
+            )
+            return
+        
+        local_path = Path(local_root).expanduser()
+        
+        if not local_path.exists():
+            QMessageBox.information(
+                self, "Already Clean",
+                f"Local directory does not exist:\n{local_path}\n\nNothing to clean."
+            )
+            return
+        
+        # Get file age info for the confirmation dialog
+        age_days = self.get_local_files_age(local_path)
+        age_info = f"\n\nLast modified: {age_days} days ago" if age_days is not None else ""
+        
+        # Confirmation dialog with strong warnings
+        reply = QMessageBox.question(
+            self, "⚠️ Confirm Local File Deletion",
+            f"<b>This will DELETE all local files for {site_key}</b>\n\n"
+            f"Local path: {local_path}{age_info}\n\n"
+            f"<span style='color: #dc2626;'>⚠️ This action CANNOT be undone!</span>\n\n"
+            f"<span style='color: #059669;'>✓ Server files will NOT be affected</span>\n\n"
+            f"You can always pull fresh files from the server after deletion.\n\n"
+            f"Do you want to continue?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.No:
+            self.log_output("Local file cleanup cancelled.\n", "info")
+            return
+        
+        # Perform deletion
+        try:
+            self.log_output(f"🗑️ Cleaning local files for {site_key}...\n", "info")
+            self.log_output(f"Deleting: {local_path}\n")
+            
+            # Use shutil.rmtree to recursively delete the directory
+            shutil.rmtree(local_path)
+            
+            self.log_output("✅ Local files deleted successfully!\n", "success")
+            self.log_output("💡 Tip: Use 'Pull' to download fresh files from server\n", "info")
+            
+            # Update the site info display
+            self.on_site_selected()
+            
+            QMessageBox.information(
+                self, "Success",
+                f"Local files deleted successfully!\n\n"
+                f"The directory has been removed:\n{local_path}\n\n"
+                f"Use 'Pull' to download fresh files from the server."
+            )
+            
+        except PermissionError:
+            error_msg = f"Permission denied. Cannot delete some files.\n"
+            self.log_output(f"❌ {error_msg}", "error")
+            QMessageBox.critical(
+                self, "Permission Error",
+                f"{error_msg}\nPlease check file permissions and try again."
+            )
+        except Exception as e:
+            error_msg = f"Error deleting local files: {str(e)}\n"
+            self.log_output(f"❌ {error_msg}", "error")
+            QMessageBox.critical(
+                self, "Error",
+                f"Failed to delete local files:\n{str(e)}"
+            )
     
     def download_and_install_update(self, checker, download_url):
         """Download and install an update"""
