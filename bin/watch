@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# Don't use -e or -o pipefail - we want to handle errors gracefully and keep watching
+# Only use -u for undefined variable checking
+set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/../lib/common.sh"
+
+# Override set -e and pipefail from common.sh - we want to handle errors gracefully
+set +e
+set +o pipefail
 
 SITE_KEY="${1:-}"
 [[ -n "$SITE_KEY" ]] || usage_site_arg
@@ -37,14 +43,31 @@ trigger_sync() {
 
   last_run="$now"
   pending=0
-  run_all_push || log "Push failed; waiting for next change."
+  
+  # Run push and capture exit code - don't exit on failure
+  if run_all_push; then
+    log "Sync complete"
+  else
+    log "Push failed; waiting for next change."
+  fi
 }
 
-while IFS= read -r _event; do
+# Start fswatch and process events
+watch_paths | xargs fswatch -0 2>&1 | while IFS= read -r -d '' event; do
   trigger_sync
 
   if (( pending == 1 )); then
     sleep "$DEBOUNCE_SECONDS"
     trigger_sync
   fi
-done < <(watch_paths | xargs fswatch -0 | xargs -0 -n 1 echo)
+done
+
+# If we exit the loop, fswatch stopped
+fswatch_exit=$?
+exit_code=$?
+if [[ $exit_code -ne 0 ]]; then
+  log "fswatch exited with code $exit_code"
+else
+  log "fswatch stopped unexpectedly"
+fi
+exit $exit_code

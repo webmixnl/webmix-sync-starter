@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# Don't set -e here - let the calling script decide error handling
+# This allows watch script to handle errors gracefully while pull/push can be strict
 
 # Ensure Homebrew paths are available (for fswatch, etc.)
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
@@ -154,7 +155,7 @@ run_rsync_pull_item() {
   log "Pulling: $rel"
   # shellcheck disable=SC2086
   rsync "${rsync_args[@]}" -e "$ssh_cmd" "$remote" "$local"
-  log "✓ Pull complete"
+  log "Pull complete"
 }
 
 run_rsync_push_item() {
@@ -188,7 +189,9 @@ run_rsync_push_item() {
   log "Pushing: $rel"
   # shellcheck disable=SC2086
   rsync "${rsync_args[@]}" -e "$ssh_cmd" "$local" "$remote"
-  log "✓ Push complete"
+  local rsync_exit=$?
+  log "Push complete"
+  return $rsync_exit
 }
 
 run_all_pull() {

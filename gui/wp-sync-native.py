@@ -1291,14 +1291,15 @@ class CommandThread(QThread):
             env = os.environ.copy()
             env['PYTHONUNBUFFERED'] = '1'
             
-            # Wrap command with stdbuf to force line buffering (if available)
-            command = self.command
-            if shutil.which('stdbuf'):
-                # -oL = line buffering for stdout, -eL = line buffering for stderr
-                command = ['stdbuf', '-oL', '-eL'] + self.command
+            # Ensure Homebrew paths are available (for fswatch, etc.)
+            # This is critical for packaged apps that don't inherit full shell PATH
+            current_path = env.get('PATH', '')
+            homebrew_paths = '/opt/homebrew/bin:/usr/local/bin'
+            if homebrew_paths not in current_path:
+                env['PATH'] = f"{homebrew_paths}:{current_path}"
             
             self.process = subprocess.Popen(
-                command,
+                self.command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -1332,30 +1333,19 @@ class CommandThread(QThread):
                 except:
                     break
             
-            # Read any remaining output only if not stopping
-            if not self._stopping:
+            # Process has exited - get return code
+            if self.process.poll() is not None:
+                # Read any final output that might be buffered
                 try:
-                    # Try to read remaining data with timeout
-                    import sys
-                    if sys.platform != 'win32':
-                        remaining_lines = []
-                        while True:
-                            ready, _, _ = select.select([self.process.stdout], [], [], 0.05)
-                            if not ready:
-                                break
-                            line = self.process.stdout.readline()
-                            if not line:
-                                break
-                            remaining_lines.append(line)
-                        for line in remaining_lines:
-                            self.output_signal.emit(line)
+                    remaining = self.process.stdout.read()
+                    if remaining:
+                        self.output_signal.emit(remaining)
                 except:
                     pass
-            
-            # Get final return code
-            if self.process.poll() is not None:
+                
                 return_code = self.process.returncode
             else:
+                # Process is still running but we're stopping
                 return_code = 0
                 
             self.finished_signal.emit(return_code)
@@ -2252,7 +2242,7 @@ class WPSyncGUI(QMainWindow):
         self.push_btn.clicked.connect(self.run_push)
         sync_row.addWidget(self.push_btn)
         
-        self.watch_btn = QPushButton("👁 Watch")
+        self.watch_btn = QPushButton("Watch")
         self.watch_btn.setObjectName("watchBtn")
         self.watch_btn.setMinimumHeight(32)
         self.watch_btn.clicked.connect(self.toggle_watch)
@@ -3133,7 +3123,7 @@ class WPSyncGUI(QMainWindow):
         # Update tray icon
         self.update_tray_watch_status(True)
         
-        self.watch_btn.setText("⏹ Stop")
+        self.watch_btn.setText("Stop")
         self.watch_btn.setObjectName("watchBtnActive")
         self.watch_btn.setStyleSheet("")
         self.watch_btn.style().unpolish(self.watch_btn)
@@ -3154,7 +3144,7 @@ class WPSyncGUI(QMainWindow):
             self._stopping_watch = True
             
             # Update UI immediately to show stopping state
-            self.watch_btn.setText("⏹ Stopping...")
+            self.watch_btn.setText("Stopping...")
             self.watch_btn.setEnabled(False)
             self.statusBar().showMessage("Stopping watch...")
             
@@ -3191,9 +3181,16 @@ class WPSyncGUI(QMainWindow):
             return
             
         if self._stopping_watch:
-            self.log_output("\n✓ Watch mode stopped\n", "info")
+            self.log_output("\nWatch mode stopped\n", "info")
         elif return_code != 0:
-            self.log_output(f"\n✗ Watch mode exited with code {return_code}\n", "error")
+            self.log_output(f"\nWatch mode exited with code {return_code}\n", "error")
+        else:
+            # Watch exited unexpectedly with code 0 - provide feedback
+            self.log_output("\nWatch mode stopped unexpectedly\n", "warning")
+            self.log_output("This may be due to: missing fswatch, invalid paths, or permissions issues\n", "warning")
+            self.log_output("Try: 1) Verify fswatch is installed (brew install fswatch)\n", "info")
+            self.log_output("     2) Check that local paths exist\n", "info")
+            self.log_output("     3) Review the output above for errors\n", "info")
         
         self._stopping_watch = False
         self._reset_watch_ui()
@@ -3212,7 +3209,7 @@ class WPSyncGUI(QMainWindow):
         self.update_tray_watch_status(False)
         self.update_tray_sync_status(False)
         
-        self.watch_btn.setText("👁 Watch")
+        self.watch_btn.setText("Watch")
         self.watch_btn.setObjectName("watchBtn")
         self.watch_btn.setStyleSheet("")
         self.watch_btn.style().unpolish(self.watch_btn)
