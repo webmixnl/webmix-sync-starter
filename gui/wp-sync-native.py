@@ -25,10 +25,17 @@ from PyQt5.QtWidgets import (
     QLabel, QComboBox, QPushButton, QTextEdit, QCheckBox, QMessageBox,
     QGroupBox, QFrame, QDialog, QLineEdit, QFormLayout, QDialogButtonBox,
     QFileDialog, QPlainTextEdit, QMenuBar, QAction, QTabWidget, QSpinBox,
-    QListWidget, QListWidgetItem, QProgressDialog
+    QListWidget, QListWidgetItem, QProgressDialog, QSystemTrayIcon, QMenu
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QProcess
 from PyQt5.QtGui import QFont, QTextCursor, QIcon, QTextCharFormat, QColor
+
+# macOS native menubar support
+try:
+    from AppKit import NSStatusBar, NSMenu, NSMenuItem, NSVariableStatusItemLength
+    MACOS_STATUSBAR_AVAILABLE = True
+except ImportError:
+    MACOS_STATUSBAR_AVAILABLE = False
 
 try:
     from update_checker import UpdateChecker
@@ -1280,13 +1287,24 @@ class CommandThread(QThread):
         
     def run(self):
         try:
+            # Force unbuffered output
+            env = os.environ.copy()
+            env['PYTHONUNBUFFERED'] = '1'
+            
+            # Wrap command with stdbuf to force line buffering (if available)
+            command = self.command
+            if shutil.which('stdbuf'):
+                # -oL = line buffering for stdout, -eL = line buffering for stderr
+                command = ['stdbuf', '-oL', '-eL'] + self.command
+            
             self.process = subprocess.Popen(
-                self.command,
+                command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
-                cwd=str(self.cwd)
+                cwd=str(self.cwd),
+                env=env
             )
             
             # Read output with interruptible checking
@@ -1661,7 +1679,13 @@ class WPSyncGUI(QMainWindow):
         self.permissions_thread = None
         self.api_sites_data = []  # Store API sites data
         
+        # System tray tracking
+        self.is_syncing = False  # Track if actively pushing/pulling
+        self.sync_start_time = None  # Track when sync started
+        self.sync_timeout_timer = None  # Timer for sync timeout fallback
+        
         self.init_ui()
+        self.init_system_tray()
         self.load_sites()
         
         # Check authentication on startup
@@ -1692,7 +1716,245 @@ class WPSyncGUI(QMainWindow):
         
         # Create new directory structure
         self.user_data_dir.mkdir(parents=True, exist_ok=True)
+    
+    def init_system_tray(self):
+        """Initialize system tray icon and menu"""
+        # Check if system tray is available
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
         
+        # Initialize macOS native status bar with text (for title display)
+        if MACOS_STATUSBAR_AVAILABLE:
+            self.status_bar = NSStatusBar.systemStatusBar()
+            self.status_item = self.status_bar.statusItemWithLength_(NSVariableStatusItemLength)
+            self.status_item.setTitle_("⚪")
+        
+        # Create system tray icon (for menu)
+        self.tray_icon = QSystemTrayIcon(self)
+        
+        # Set initial icon - try to use app icon, fallback to default
+        icon_path = self.project_root / "gui" / "app-icon.png"
+        if icon_path.exists():
+            self.tray_icon.setIcon(QIcon(str(icon_path)))
+        else:
+            # Use application style icon as fallback
+            self.tray_icon.setIcon(self.style().standardIcon(self.style().SP_ComputerIcon))
+        
+        # Create context menu
+        tray_menu = QMenu()
+        
+        # Show/Hide window action
+        self.show_action = QAction("Show Window", self)
+        self.show_action.triggered.connect(self.show_window)
+        tray_menu.addAction(self.show_action)
+        
+        tray_menu.addSeparator()
+        
+        # Watch status (not clickable, just shows status)
+        self.watch_status_action = QAction("⚪ Watch: Inactive", self)
+        self.watch_status_action.setEnabled(False)
+        tray_menu.addAction(self.watch_status_action)
+        
+        # Sync status (not clickable, just shows status)
+        self.sync_status_action = QAction("⚪ Sync: Idle", self)
+        self.sync_status_action.setEnabled(False)
+        tray_menu.addAction(self.sync_status_action)
+        
+        tray_menu.addSeparator()
+        
+        # Quick actions
+        self.tray_toggle_watch = QAction("Start Watch", self)
+        self.tray_toggle_watch.triggered.connect(self.toggle_watch)
+        tray_menu.addAction(self.tray_toggle_watch)
+        
+        tray_menu.addSeparator()
+        
+        # Quit action
+        quit_action = QAction("Quit", self)
+        quit_action.triggered.connect(self.quit_application)
+        tray_menu.addAction(quit_action)
+        
+        # Set menu and show
+        self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.setToolTip("Webmix Sync Starter\n⚪ Watch: Inactive")
+        
+        # Handle tray icon clicks
+        self.tray_icon.activated.connect(self.tray_icon_activated)
+        
+        # Show tray icon (on macOS, use native status bar instead)
+        if MACOS_STATUSBAR_AVAILABLE:
+            self._build_native_menu()
+        else:
+            self.tray_icon.show()
+    
+    def _build_native_menu(self):
+        """Build native NSMenu for macOS status bar"""
+        if not MACOS_STATUSBAR_AVAILABLE:
+            return
+        
+        menu = NSMenu.alloc().init()
+        
+        # Show Window
+        item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Show Window", None, "")
+        item.setTarget_(self)
+        item.setAction_("showWindow:")
+        menu.addItem_(item)
+        
+        menu.addItem_(NSMenuItem.separatorItem())
+        
+        # Watch status (disabled)
+        self.ns_watch_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("⚪ Watch: Inactive", None, "")
+        self.ns_watch_item.setEnabled_(False)
+        menu.addItem_(self.ns_watch_item)
+        
+        # Sync status (disabled)
+        self.ns_sync_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("⚪ Sync: Idle", None, "")
+        self.ns_sync_item.setEnabled_(False)
+        menu.addItem_(self.ns_sync_item)
+        
+        menu.addItem_(NSMenuItem.separatorItem())
+        
+        # Toggle watch
+        self.ns_toggle_watch = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Start Watch", None, "")
+        self.ns_toggle_watch.setTarget_(self)
+        self.ns_toggle_watch.setAction_("toggleWatch:")
+        menu.addItem_(self.ns_toggle_watch)
+        
+        menu.addItem_(NSMenuItem.separatorItem())
+        
+        # Quit
+        item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Quit", None, "")
+        item.setTarget_(self)
+        item.setAction_("quitApp:")
+        menu.addItem_(item)
+        
+        self.status_item.setMenu_(menu)
+    
+    # PyObjC callback methods
+    def showWindow_(self, sender):
+        """NSMenu callback to show window"""
+        self.show_window()
+    
+    def toggleWatch_(self, sender):
+        """NSMenu callback to toggle watch"""
+        self.toggle_watch()
+    
+    def quitApp_(self, sender):
+        """NSMenu callback to quit"""
+        self.quit_application()
+    
+    def update_tray_watch_status(self, is_active):
+        """Update system tray icon to reflect watch status"""
+        if not hasattr(self, 'tray_icon'):
+            return
+        
+        if is_active:
+            self.watch_status_action.setText("🟢 Watch: Active")
+            self.tray_toggle_watch.setText("Stop Watch")
+            status = "🟢 Watch: Active"
+            icon = "🟢"
+        else:
+            self.watch_status_action.setText("⚪ Watch: Inactive")
+            self.tray_toggle_watch.setText("Start Watch")
+            status = "⚪ Watch: Inactive"
+            icon = "⚪"
+        
+        # Update macOS menubar text
+        if MACOS_STATUSBAR_AVAILABLE and hasattr(self, 'status_item'):
+            sync_icon = " 🔄" if self.is_syncing else ""
+            self.status_item.setTitle_(f"{icon}{sync_icon}")
+            
+            # Update native menu items
+            if hasattr(self, 'ns_watch_item'):
+                self.ns_watch_item.setTitle_(status)
+            if hasattr(self, 'ns_toggle_watch'):
+                self.ns_toggle_watch.setTitle_("Stop Watch" if is_active else "Start Watch")
+        
+        # Update tooltip
+        sync_part = "\n🔄 Syncing..." if self.is_syncing else ""
+        self.tray_icon.setToolTip(f"Webmix Sync Starter\n{status}{sync_part}")
+    
+    def update_tray_sync_status(self, is_syncing, operation=""):
+        """Update system tray icon to reflect sync activity"""
+        if not hasattr(self, 'tray_icon'):
+            return
+        
+        self.is_syncing = is_syncing
+        
+        # Cancel timeout timer when manually clearing sync status
+        if not is_syncing and hasattr(self, 'sync_timeout_timer') and self.sync_timeout_timer:
+            self.sync_timeout_timer.stop()
+            self.sync_timeout_timer = None
+        
+        if is_syncing:
+            if operation:
+                self.sync_status_action.setText(f"🔄 Syncing: {operation}")
+                sync_text = f"🔄 Syncing: {operation}"
+            else:
+                self.sync_status_action.setText("🔄 Syncing...")
+                sync_text = "🔄 Syncing..."
+        else:
+            self.sync_status_action.setText("⚪ Sync: Idle")
+            sync_text = "⚪ Sync: Idle"
+        
+        # Update macOS menubar text
+        if MACOS_STATUSBAR_AVAILABLE and hasattr(self, 'status_item'):
+            watch_active = self.watch_thread and self.watch_thread.isRunning()
+            watch_icon = "🟢" if watch_active else "⚪"
+            sync_icon = " 🔄" if is_syncing else ""
+            self.status_item.setTitle_(f"{watch_icon}{sync_icon}")
+            
+            # Update native menu item
+            if hasattr(self, 'ns_sync_item'):
+                self.ns_sync_item.setTitle_(sync_text)
+        
+        # Update tooltip
+        watch_active = self.watch_thread and self.watch_thread.isRunning()
+        watch_status = "🟢 Watch: Active" if watch_active else "⚪ Watch: Inactive"
+        sync_part = "\n🔄 Syncing..." if is_syncing else ""
+        self.tray_icon.setToolTip(f"Webmix Sync Starter\n{watch_status}{sync_part}")
+    
+    def tray_icon_activated(self, reason):
+        """Handle tray icon activation (click)"""
+        if reason == QSystemTrayIcon.DoubleClick or reason == QSystemTrayIcon.Trigger:
+            self.show_window()
+    
+    def show_window(self):
+        """Show and raise the main window"""
+        self.show()
+        self.raise_()
+        self.activateWindow()
+    
+    def quit_application(self):
+        """Quit the entire application"""
+        # Stop watch if running
+        if self.watch_thread and self.watch_thread.isRunning():
+            self.stop_watch()
+        
+        # Clean up tray icon
+        if hasattr(self, 'tray_icon'):
+            self.tray_icon.hide()
+        
+        QApplication.quit()
+    
+    def migrate_user_data(self):
+        """Migrate settings and sites from old locations to new location (Application Support)"""
+        import shutil
+        
+        # Old app name (if renaming from previous version)
+        old_app_support_dir = Path.home() / "Library" / "Application Support" / "Webmix Sync Tool"
+        
+        # Old locations (inside app bundle)
+        old_settings_file = self.project_root / "config" / "app-settings.json"
+        old_sites_dir = self.project_root / "config" / "sites"
+        
+        # New locations (Application Support with new app name)
+        new_settings_file = self.user_data_dir / "app-settings.json"
+        new_sites_dir = self.sites_dir
+        
+        # Create new directory structure
+        self.user_data_dir.mkdir(parents=True, exist_ok=True)
+    
         # PRIORITY 1: Migrate from old app name in Application Support (e.g., after app rename)
         if old_app_support_dir.exists() and old_app_support_dir != self.user_data_dir:
             old_app_settings = old_app_support_dir / "app-settings.json"
@@ -2868,6 +3130,9 @@ class WPSyncGUI(QMainWindow):
         self.watch_thread.finished_signal.connect(self.on_watch_finished)
         self.watch_thread.start()
         
+        # Update tray icon
+        self.update_tray_watch_status(True)
+        
         self.watch_btn.setText("⏹ Stop")
         self.watch_btn.setObjectName("watchBtnActive")
         self.watch_btn.setStyleSheet("")
@@ -2943,6 +3208,10 @@ class WPSyncGUI(QMainWindow):
     
     def _reset_watch_ui(self):
         """Reset watch button and UI to ready state"""
+        # Update tray icons and clear sync status
+        self.update_tray_watch_status(False)
+        self.update_tray_sync_status(False)
+        
         self.watch_btn.setText("👁 Watch")
         self.watch_btn.setObjectName("watchBtn")
         self.watch_btn.setStyleSheet("")
@@ -3772,6 +4041,9 @@ class WPSyncGUI(QMainWindow):
     
     def on_command_finished(self, return_code, action_name):
         """Handle command completion"""
+        # Clear sync status
+        self.update_tray_sync_status(False)
+        
         if return_code == 0:
             self.log_output(f"\n✓ {action_name} completed successfully\n", "success")
             self.statusBar().showMessage("Ready")
@@ -3796,6 +4068,7 @@ class WPSyncGUI(QMainWindow):
             self.current_thread.stop()
             self.current_thread.wait()
             self.current_thread = None
+            self.update_tray_sync_status(False)
             self.update_button_states(True)
             self.statusBar().showMessage("Stopped")
     
@@ -3818,6 +4091,48 @@ class WPSyncGUI(QMainWindow):
     
     def append_output(self, text):
         """Append output from thread"""
+        import time
+        
+        # Detect sync activity from output
+        sync_started = False
+        if "Pushing:" in text or "pushing" in text.lower():
+            self.update_tray_sync_status(True, "Push")
+            sync_started = True
+        elif "Pulling:" in text or "pulling" in text.lower():
+            self.update_tray_sync_status(True, "Pull")
+            sync_started = True
+        elif "rsync" in text.lower() and "building file list" in text.lower():
+            self.update_tray_sync_status(True)
+            sync_started = True
+        
+        # Track sync start time and set safety timeout
+        if sync_started:
+            self.sync_start_time = time.time()
+            # Cancel any existing timeout
+            if self.sync_timeout_timer:
+                self.sync_timeout_timer.stop()
+            # Set 15 second safety timeout to auto-clear sync status
+            self.sync_timeout_timer = QTimer()
+            self.sync_timeout_timer.setSingleShot(True)
+            self.sync_timeout_timer.timeout.connect(lambda: self.update_tray_sync_status(False))
+            self.sync_timeout_timer.start(15000)
+        
+        # Detect completion from explicit log messages
+        if self.is_syncing:
+            completion_detected = False
+            
+            # Check for completion markers
+            if "✓ Push complete" in text or "✓ Pull complete" in text:
+                completion_detected = True
+            
+            if completion_detected:
+                # Cancel timeout timer since we detected completion
+                if self.sync_timeout_timer:
+                    self.sync_timeout_timer.stop()
+                    self.sync_timeout_timer = None
+                # Clear sync status after brief delay
+                QTimer.singleShot(300, lambda: self.update_tray_sync_status(False))
+        
         self.output_text.setTextColor(QColor("#374151"))
         self.output_text.insertPlainText(text)
         self.output_text.moveCursor(QTextCursor.End)
@@ -3827,7 +4142,39 @@ class WPSyncGUI(QMainWindow):
         self.output_text.clear()
     
     def closeEvent(self, event):
-        """Handle window close"""
+        """Handle window close - minimize to tray or quit"""
+        # Check if we should minimize to tray
+        if hasattr(self, 'tray_icon') and self.tray_icon.isVisible():
+            # If watch is running, still minimize to tray
+            if self.watch_thread and self.watch_thread.isRunning():
+                event.ignore()
+                self.hide()
+                # Show notification
+                if not hasattr(self, '_tray_notification_shown'):
+                    self.tray_icon.showMessage(
+                        "Webmix Sync Starter",
+                        "Watch mode is still running. Application minimized to menu bar.",
+                        QSystemTrayIcon.Information,
+                        3000
+                    )
+                    self._tray_notification_shown = True
+                return
+            else:
+                # No watch running, just minimize to tray
+                event.ignore()
+                self.hide()
+                # Show notification on first minimize
+                if not hasattr(self, '_tray_notification_shown'):
+                    self.tray_icon.showMessage(
+                        "Webmix Sync Starter",
+                        "Application minimized to menu bar. Click the icon to show the window again.",
+                        QSystemTrayIcon.Information,
+                        3000
+                    )
+                    self._tray_notification_shown = True
+                return
+        
+        # No tray, handle normal quit
         # Helper function to safely cleanup a thread
         def cleanup_thread(thread, timeout=3000):
             if thread and thread.isRunning():

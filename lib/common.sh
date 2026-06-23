@@ -154,6 +154,7 @@ run_rsync_pull_item() {
   log "Pulling: $rel"
   # shellcheck disable=SC2086
   rsync "${rsync_args[@]}" -e "$ssh_cmd" "$remote" "$local"
+  log "✓ Pull complete"
 }
 
 run_rsync_push_item() {
@@ -187,6 +188,7 @@ run_rsync_push_item() {
   log "Pushing: $rel"
   # shellcheck disable=SC2086
   rsync "${rsync_args[@]}" -e "$ssh_cmd" "$local" "$remote"
+  log "✓ Push complete"
 }
 
 run_all_pull() {
